@@ -7,6 +7,8 @@ retrieval wiring without downloading a model.
 """
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from rag_mcp.store import HashEmbedder, VectorStore
@@ -19,8 +21,11 @@ def embedder() -> HashEmbedder:
 
 @pytest.fixture
 def store(embedder: HashEmbedder) -> VectorStore:
-    # In-memory (ephemeral) store: no disk, fast, isolated per test.
-    return VectorStore(path=None, collection_name="test", embedder=embedder)
+    # In-memory (ephemeral) store. Chroma shares one in-process ephemeral instance,
+    # so a unique collection name per test keeps fixtures isolated.
+    return VectorStore(
+        path=None, collection_name=f"test_{uuid.uuid4().hex}", embedder=embedder
+    )
 
 
 @pytest.fixture

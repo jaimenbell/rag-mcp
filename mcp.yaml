@@ -1,0 +1,47 @@
+# mcp.yaml - rag-mcp manifest, expressible in the mcp-factory model.
+# runtime.script references an existing server (run_server.py), so the factory
+# emits the ~/.claude.json entry rather than scaffolding a stub. Relative script
+# path resolves against this file's directory; works on any machine once the
+# venv path in runtime.command is set.
+
+name: rag-mcp
+description: >
+  Retrieval over a local knowledge corpus via embeddings. search_knowledge(query, k)
+  returns the most relevant passages plus citations (source file + heading + chunk index)
+  so answers are traceable. Auth-scoped to the configured corpus root and fail-soft (a
+  down/empty store returns a structured error, never crashes the agent). Use to look
+  something up in the knowledge base / docs.
+
+runtime:
+  type: python
+  command: "C:\\Users\\jaime\\projects\\rag-mcp\\.venv\\Scripts\\python.exe"
+  script: "run_server.py"
+
+tools:
+  - name: search_knowledge
+    description: >
+      Retrieve the top-k most relevant passages from the configured knowledge corpus
+      for a natural-language query. Each hit includes the passage text and a citation
+      (source path + heading + chunk index). Auth-scoped + fail-soft.
+    args:
+      - name: query
+        type: string
+        required: true
+        description: "Natural-language search query."
+      - name: k
+        type: number
+        required: false
+        description: "Max passages to return, 1-20 (default 5)."
+
+env_required:
+  - RAG_MCP_CORPUS_ROOT
+  - RAG_MCP_DB_PATH
+
+env:
+  RAG_MCP_CORPUS_ROOT: ""        # absolute path to the corpus the tool may read (auth scope)
+  RAG_MCP_DB_PATH: ""            # absolute path to the on-disk Chroma store
+  RAG_MCP_COLLECTION: "knowledge"
+  RAG_MCP_EMBEDDER: "default"    # 'default' (local ONNX MiniLM) | 'hash' (offline test)
+
+tags: [rag, retrieval, embeddings, knowledge-base, mcp]
+priority: high
