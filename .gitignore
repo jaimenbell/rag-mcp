@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual env (local, not committed)
+.venv/
+
+# Vector store data (local corpus index - PRIVACY: never commit, may hold vault-derived vectors)
+*.chroma/
+chroma_store/
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db

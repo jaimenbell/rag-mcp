@@ -1,0 +1,6 @@
+# rag-mcp runtime + test deps - version-pinned (reliability rail)
+# Installed/verified 2026-06-29 on Python 3.12, Windows.
+mcp==1.28.1
+chromadb==1.5.9
+PyYAML==6.0.3
+pytest==9.1.1
