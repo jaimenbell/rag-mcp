@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-from .ingest import ingest
+from .ingest import EXCLUDE_PREFIXES, ingest
 from .store import DefaultEmbedder, HashEmbedder, VectorStore
 
 
@@ -24,7 +24,9 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         collection_name=args.collection,
         embedder=_embedder(args.embedder),
     )
-    report = ingest(args.corpus_dir, store)
+    # CLI --exclude flags AUGMENT the built-in defaults; they do not replace them.
+    exclude_prefixes = EXCLUDE_PREFIXES + tuple(args.exclude)
+    report = ingest(args.corpus_dir, store, exclude_prefixes=exclude_prefixes)
     print(
         json.dumps(
             {
@@ -64,6 +66,17 @@ def main(argv: list[str] | None = None) -> int:
     p_ing = sub.add_parser("ingest", help="ingest a corpus dir")
     p_ing.add_argument("corpus_dir")
     p_ing.add_argument("--db", required=True)
+    p_ing.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="PREFIX",
+        help=(
+            "vault-relative POSIX prefix to exclude from ingestion (repeatable). "
+            "These AUGMENT the built-in defaults (infrastructure/claude-config-backup/) "
+            "rather than replacing them."
+        ),
+    )
     p_ing.set_defaults(func=_cmd_ingest)
 
     p_q = sub.add_parser("query", help="query the store")

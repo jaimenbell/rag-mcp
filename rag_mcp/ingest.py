@@ -15,6 +15,11 @@ from .store import VectorStore
 
 MARKDOWN_EXTS = (".md", ".markdown")
 
+# Vault-relative POSIX path prefixes excluded from ingest by default.
+# Files whose relative path starts with any of these strings are silently skipped.
+# CLI --exclude flags AUGMENT (not replace) these defaults.
+EXCLUDE_PREFIXES = ("infrastructure/claude-config-backup/",)
+
 
 @dataclass
 class IngestReport:
@@ -24,11 +29,29 @@ class IngestReport:
     chunks_added: int = 0
 
 
-def iter_corpus_files(root: Path | str, exts: Iterable[str] = MARKDOWN_EXTS) -> list[Path]:
+def iter_corpus_files(
+    root: Path | str,
+    exts: Iterable[str] = MARKDOWN_EXTS,
+    exclude_prefixes: tuple[str, ...] = EXCLUDE_PREFIXES,
+) -> list[Path]:
+    """Return sorted list of corpus markdown files, skipping excluded prefix subtrees.
+
+    Args:
+        root: corpus root directory.
+        exts: file extensions to include (case-insensitive).
+        exclude_prefixes: vault-relative POSIX prefixes to skip. Files whose
+            relative path starts with any of these strings are excluded. Pass
+            ``()`` to disable all exclusions.
+    """
     root = Path(root)
     exts = tuple(e.lower() for e in exts)
     return sorted(
-        p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in exts
+        p for p in root.rglob("*")
+        if p.is_file()
+        and p.suffix.lower() in exts
+        and not any(
+            p.relative_to(root).as_posix().startswith(px) for px in exclude_prefixes
+        )
     )
 
 
@@ -46,10 +69,18 @@ def ingest(
     *,
     max_chars: int = DEFAULT_MAX_CHARS,
     overlap: int = DEFAULT_OVERLAP,
+    exclude_prefixes: tuple[str, ...] = EXCLUDE_PREFIXES,
 ) -> IngestReport:
+    """Ingest all corpus files into *store*, skipping excluded prefix subtrees.
+
+    Args:
+        exclude_prefixes: vault-relative POSIX prefixes to skip (see
+            :data:`EXCLUDE_PREFIXES`). Passed straight through to
+            :func:`iter_corpus_files`. Pass ``()`` to disable all exclusions.
+    """
     root = Path(root)
     report = IngestReport()
-    for path in iter_corpus_files(root):
+    for path in iter_corpus_files(root, exclude_prefixes=exclude_prefixes):
         report.files_seen += 1
         text = load_file(path)
         if text is None or not text.strip():

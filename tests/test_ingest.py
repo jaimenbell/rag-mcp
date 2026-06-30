@@ -1,7 +1,9 @@
 """Phase 1 - ingest pipeline: population, metadata, idempotency, fail-soft loading."""
 from __future__ import annotations
 
-from rag_mcp.ingest import ingest, iter_corpus_files, load_file
+import pytest
+
+from rag_mcp.ingest import EXCLUDE_PREFIXES, ingest, iter_corpus_files, load_file
 
 
 def test_iter_corpus_files_only_markdown(corpus):
@@ -56,3 +58,51 @@ def test_relevant_chunk_retrievable(corpus, store):
     hits = store.query("loyal dog that barks", k=1)
     assert hits
     assert hits[0]["metadata"]["source"] == "dogs.md"
+
+
+# ---------------------------------------------------------------------------
+# exclude_prefixes — new tests (KB issue #7)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def backup_corpus(tmp_path):
+    """Corpus with a live skill and a backup copy under the default-excluded prefix."""
+    (tmp_path / "skills").mkdir()
+    (tmp_path / "skills" / "solana.md").write_text(
+        "# Solana\n\nLive skill content.", encoding="utf-8"
+    )
+    backup = tmp_path / "infrastructure" / "claude-config-backup" / "skills"
+    backup.mkdir(parents=True)
+    (backup / "solana.md").write_text(
+        "# Solana\n\nStale backup content.", encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_iter_corpus_files_excludes_default_prefix(backup_corpus):
+    """Default EXCLUDE_PREFIXES hides the claude-config-backup subtree."""
+    paths = iter_corpus_files(backup_corpus)
+    posix_paths = {p.relative_to(backup_corpus).as_posix() for p in paths}
+    assert not any("claude-config-backup" in p for p in posix_paths)
+
+
+def test_iter_corpus_files_non_excluded_sibling_included(backup_corpus):
+    """Files outside the excluded prefix are still returned."""
+    paths = iter_corpus_files(backup_corpus)
+    posix_paths = {p.relative_to(backup_corpus).as_posix() for p in paths}
+    assert "skills/solana.md" in posix_paths
+
+
+def test_iter_corpus_files_empty_exclude_returns_all_md(backup_corpus):
+    """Passing exclude_prefixes=() bypasses all exclusions — all markdown returned."""
+    paths = iter_corpus_files(backup_corpus, exclude_prefixes=())
+    posix_paths = {p.relative_to(backup_corpus).as_posix() for p in paths}
+    assert "skills/solana.md" in posix_paths
+    assert any("claude-config-backup" in p for p in posix_paths)
+
+
+def test_ingest_exclude_prefix_skips_subtree(backup_corpus, store):
+    """ingest() respects default exclude_prefixes: backup subtree never ingested."""
+    report = ingest(backup_corpus, store)
+    assert report.files_ingested == 1  # only the live skill
+    assert report.files_seen == 1      # backup never enters the loop
