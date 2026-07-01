@@ -12,6 +12,9 @@ __pycache__/
 chroma_store/
 *.sqlite3
 
+# Re-ingest routine logs (runtime output)
+logs/
+
 # OS
 .DS_Store
 Thumbs.db
