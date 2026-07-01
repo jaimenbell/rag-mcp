@@ -21,10 +21,9 @@ if not exist "%REPO%\logs" mkdir "%REPO%\logs"
 
 echo ==================================================================>> "%LOG%"
 echo [%DATE% %TIME%] rag-mcp CLEAN rebuild START (pruning orphans)>> "%LOG%"
-if exist "%STORE%" (
-    rmdir /s /q "%STORE%"
-    echo [%DATE% %TIME%] deleted old store>> "%LOG%"
-)
+REM The store delete is done INSIDE the Python entrypoint (--clean), strictly
+REM AFTER the cross-process reingest lock is acquired, so it can never race a
+REM concurrent daily run mid-write. Do NOT rmdir the store here (outside the lock).
 cd /d "%REPO%"
-"%PY%" -m rag_mcp.cli ingest "%VAULT%" --db "%STORE%" >> "%LOG%" 2>&1
+"%PY%" -m rag_mcp.cli ingest "%VAULT%" --db "%STORE%" --clean >> "%LOG%" 2>&1
 echo [%DATE% %TIME%] rag-mcp CLEAN rebuild DONE (exit %ERRORLEVEL%)>> "%LOG%"

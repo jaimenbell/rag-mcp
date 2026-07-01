@@ -8,10 +8,38 @@ retrieval wiring without downloading a model.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import pytest
 
 from rag_mcp.store import HashEmbedder, VectorStore
+
+# Production store guard: the live index (~44k chunks) is production data. This
+# fleet has a recurring "tests pollute prod artifacts" problem, so we assert the
+# real store dir is byte-for-byte untouched by the whole test session.
+_REAL_STORE = Path(__file__).resolve().parent.parent / "store.chroma"
+
+
+def _store_fingerprint(path: Path):
+    if not path.exists():
+        return None
+    # (mtime_ns, size) of the dir and every file underneath -> any write shows up.
+    entries = [(path.stat().st_mtime_ns, -1)]
+    for p in sorted(path.rglob("*")):
+        st = p.stat()
+        entries.append((st.st_mtime_ns, st.st_size))
+    return tuple(entries)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _guard_real_store():
+    before = _store_fingerprint(_REAL_STORE)
+    yield
+    after = _store_fingerprint(_REAL_STORE)
+    assert after == before, (
+        f"TEST POLLUTION: real store {_REAL_STORE} was modified during the test "
+        f"session (fingerprint changed). Tests must use tmp dirs only."
+    )
 
 
 @pytest.fixture
