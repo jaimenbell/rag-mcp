@@ -18,7 +18,13 @@ MARKDOWN_EXTS = (".md", ".markdown")
 # Vault-relative POSIX path prefixes excluded from ingest by default.
 # Files whose relative path starts with any of these strings are silently skipped.
 # CLI --exclude flags AUGMENT (not replace) these defaults.
-EXCLUDE_PREFIXES = ("infrastructure/claude-config-backup/",)
+EXCLUDE_PREFIXES = (
+    "infrastructure/claude-config-backup/",
+    # Index-noise: link-audit sweep records are dense wikilink lists that
+    # bge-large matches aggressively on almost any vault-topic query
+    # (2/6 A/B regressions traced here at the 2026-07-02 cutover).
+    "Routines/Wikilink Scan",
+)
 
 
 @dataclass
