@@ -4,3 +4,6 @@ mcp==1.28.1
 chromadb==1.5.9
 PyYAML==6.0.3
 pytest==9.1.1
+# Added 2026-07-02: BgeEmbedder (RAG_MCP_EMBEDDER=bge) backend. Only imported
+# lazily on first bge use -- MiniLM (default) does not need this installed.
+fastembed==0.8.0
