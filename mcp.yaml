@@ -41,7 +41,7 @@ env:
   RAG_MCP_CORPUS_ROOT: ""        # absolute path to the corpus the tool may read (auth scope)
   RAG_MCP_DB_PATH: ""            # absolute path to the on-disk Chroma store
   RAG_MCP_COLLECTION: "knowledge"
-  RAG_MCP_EMBEDDER: "default"    # 'default' (local ONNX MiniLM) | 'hash' (offline test)
+  RAG_MCP_EMBEDDER: "default"    # 'default' (local ONNX MiniLM, current) | 'bge' (ONNX bge-large-en-v1.5, opt-in) | 'hash' (offline test)
 
 tags: [rag, retrieval, embeddings, knowledge-base, mcp]
 priority: high
