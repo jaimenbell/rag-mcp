@@ -10,12 +10,15 @@ REM ============================================================================
 
 set "REPO=C:\Users\jaime\projects\rag-mcp"
 set "VAULT=<your-corpus-path>"
-set "STORE=C:\Users\jaime\projects\rag-mcp\store.chroma"
+REM CUTOVER 2026-07-02: bge store (see reingest.bat header). First clean rebuild
+REM (Sun 03:30) also purges the Wikilink-Scan noise chunks baked into the
+REM initial build before the ingest exclude landed.
+set "STORE=C:\Users\jaime\projects\rag-mcp\store-bge.chroma"
 set "PY=%REPO%\.venv\Scripts\python.exe"
 set "LOG=%REPO%\logs\reingest.log"
 
 set "RAG_MCP_COLLECTION=knowledge"
-set "RAG_MCP_EMBEDDER=default"
+set "RAG_MCP_EMBEDDER=bge"
 
 if not exist "%REPO%\logs" mkdir "%REPO%\logs"
 
@@ -25,5 +28,5 @@ REM The store delete is done INSIDE the Python entrypoint (--clean), strictly
 REM AFTER the cross-process reingest lock is acquired, so it can never race a
 REM concurrent daily run mid-write. Do NOT rmdir the store here (outside the lock).
 cd /d "%REPO%"
-"%PY%" -m rag_mcp.cli ingest "%VAULT%" --db "%STORE%" --clean >> "%LOG%" 2>&1
+"%PY%" -m rag_mcp.cli ingest "%VAULT%" --db "%STORE%" --clean --embedder %RAG_MCP_EMBEDDER% >> "%LOG%" 2>&1
 echo [%DATE% %TIME%] rag-mcp CLEAN rebuild DONE (exit %ERRORLEVEL%)>> "%LOG%"
