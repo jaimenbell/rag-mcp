@@ -15,6 +15,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest==9.1.1"]
+# RAG_MCP_EMBEDDER=bge path (BAAI/bge-large-en-v1.5, ONNX via fastembed). Not
+# needed for the default MiniLM embedder -- install only when cutting over.
+bge = ["fastembed==0.8.0"]
 
 [tool.setuptools.packages.find]
 include = ["rag_mcp*"]

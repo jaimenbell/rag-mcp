@@ -3,10 +3,18 @@
   RAG_MCP_CORPUS_ROOT  - absolute path to the corpus the tool may read (auth scope).
   RAG_MCP_DB_PATH      - absolute path to the on-disk Chroma store.
   RAG_MCP_COLLECTION   - collection name (default 'knowledge').
-  RAG_MCP_EMBEDDER     - 'default' (real ONNX MiniLM) or 'hash' (offline test embedder).
+  RAG_MCP_EMBEDDER     - 'default' (real ONNX MiniLM, 384-dim -- still the DEFAULT
+                         until the bge store is validated + cut over), 'bge' (real
+                         ONNX BAAI/bge-large-en-v1.5, 1024-dim), or 'hash' (offline
+                         test embedder).
 
 The corpus root doubles as the security boundary: retrieval results are confined to
 files under it, and the resolved root must exist as a directory.
+
+NOTE: MiniLM (384-dim) and bge (1024-dim) vectors cannot share a Chroma collection
+(VectorStore raises DimensionMismatchError). Switching RAG_MCP_EMBEDDER to 'bge'
+also requires pointing RAG_MCP_DB_PATH at a bge-specific store dir (e.g.
+store-bge.chroma) -- see CUTOVER.md.
 """
 from __future__ import annotations
 
@@ -14,7 +22,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .store import DefaultEmbedder, Embedder, HashEmbedder, VectorStore
+from .store import BgeEmbedder, DefaultEmbedder, Embedder, HashEmbedder, VectorStore
 
 
 @dataclass(frozen=True)
@@ -42,6 +50,8 @@ class Config:
     def make_embedder(self) -> Embedder:
         if self.embedder_name == "hash":
             return HashEmbedder()
+        if self.embedder_name == "bge":
+            return BgeEmbedder()
         return DefaultEmbedder()
 
     def open_store(self) -> VectorStore:

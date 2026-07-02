@@ -25,7 +25,7 @@ Fully local + **$0** (no paid embedding API).
 ## Stack
 | Layer | Choice |
 |---|---|
-| Embeddings | local ONNX `all-MiniLM-L6-v2` (384-dim, CPU, $0) |
+| Embeddings | local ONNX `all-MiniLM-L6-v2` (384-dim, CPU, $0) -- **default**. `bge-large-en-v1.5` (1024-dim, 512-token context) available opt-in via `RAG_MCP_EMBEDDER=bge`; see [CUTOVER.md](./CUTOVER.md). |
 | Vector store | ChromaDB embedded `PersistentClient` (zero-infra) |
 | Server | `mcp` Python SDK, stdio transport |
 
@@ -50,14 +50,14 @@ Register via `mcp.yaml` (validated against mcp-factory's `Manifest` loader). The
 
 ## Tests
 ```bash
-python -m pytest        # 23 passed
+python -m pytest        # 43 passed
 ```
 
 ## Layout
 ```
 rag_mcp/
   chunking.py   heading-scoped, overlapping markdown chunks
-  store.py      VectorStore (Chroma) + Embedder protocol (ONNX default + offline HashEmbedder)
+  store.py      VectorStore (Chroma) + Embedder protocol (MiniLM default + BgeEmbedder opt-in + offline HashEmbedder)
   ingest.py     idempotent ingest pipeline with source/heading/chunk-index metadata
   search.py     search_knowledge: cited, auth-scoped, fail-soft, bounded
   server.py     MCP stdio server exposing search_knowledge

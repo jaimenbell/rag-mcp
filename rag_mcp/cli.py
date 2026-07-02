@@ -13,11 +13,15 @@ from pathlib import Path
 
 from .ingest import EXCLUDE_PREFIXES, ingest
 from .lock import LockHeld, ReingestLock
-from .store import DefaultEmbedder, HashEmbedder, VectorStore
+from .store import BgeEmbedder, DefaultEmbedder, HashEmbedder, VectorStore
 
 
 def _embedder(name: str):
-    return HashEmbedder() if name == "hash" else DefaultEmbedder()
+    if name == "hash":
+        return HashEmbedder()
+    if name == "bge":
+        return BgeEmbedder()
+    return DefaultEmbedder()
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
@@ -78,7 +82,9 @@ def _cmd_query(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="rag_mcp.cli")
     parser.add_argument("--collection", default="knowledge")
-    parser.add_argument("--embedder", default="default", choices=["default", "hash"])
+    parser.add_argument(
+        "--embedder", default="default", choices=["default", "hash", "bge"]
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_ing = sub.add_parser("ingest", help="ingest a corpus dir")
