@@ -17,6 +17,7 @@ import asyncio
 import json
 from typing import Any
 
+import anyio
 from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -97,11 +98,37 @@ async def call_tool(name: str, arguments: dict | None) -> list[types.TextContent
             "results": [],
         }
     else:
-        payload = _run_search(arguments or {})
+        # Run the (synchronous, potentially slow: embed + vector query) search off
+        # the event-loop thread. Blocking the loop here starves the stdio transport
+        # streams -- the response can't be written until the handler yields.
+        payload = await anyio.to_thread.run_sync(_run_search, arguments or {})
     return [types.TextContent(type="text", text=json.dumps(payload))]
 
 
+def _warm() -> None:
+    """Import heavy deps + open the store once, at startup, before transport.
+
+    The first call to _ensure_store lazily triggers chromadb's -- hence numpy's --
+    first C-extension import. Doing that on the event-loop thread DURING a tool
+    call deadlocks on Windows: by then an anyio worker thread is blocked in a
+    native stdin.readline(), and numpy's first `import` never completes, so the
+    handler never returns a response (the client sees a hang / BrokenResourceError).
+
+    Forcing the import + store open here -- before stdio_server() starts its
+    reader thread -- makes every later call a no-op import and cannot deadlock.
+    Best-effort: a missing/invalid store must not stop the server from starting;
+    the per-call fail-soft path still returns a structured error in that case.
+    """
+    try:
+        _ensure_store()
+    except Exception:  # noqa: BLE001 - warmup is best-effort; call_tool re-checks.
+        pass
+
+
 async def _main() -> None:
+    # Warm before the stdio transport (and its worker threads) exist, so the
+    # first-time numpy/chromadb import can never race a blocked stdin.readline().
+    await anyio.to_thread.run_sync(_warm)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
