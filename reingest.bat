@@ -26,5 +26,5 @@ if not exist "%REPO%\logs" mkdir "%REPO%\logs"
 echo ==================================================================>> "%LOG%"
 echo [%DATE% %TIME%] rag-mcp re-ingest START>> "%LOG%"
 cd /d "%REPO%"
-"%PY%" -m rag_mcp.cli ingest "%VAULT%" --db "%STORE%" --embedder %RAG_MCP_EMBEDDER% >> "%LOG%" 2>&1
+"%PY%" -m rag_mcp.cli --embedder %RAG_MCP_EMBEDDER% ingest "%VAULT%" --db "%STORE%" >> "%LOG%" 2>&1
 echo [%DATE% %TIME%] rag-mcp re-ingest DONE (exit %ERRORLEVEL%)>> "%LOG%"

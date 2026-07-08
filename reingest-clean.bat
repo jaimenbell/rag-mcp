@@ -28,5 +28,5 @@ REM The store delete is done INSIDE the Python entrypoint (--clean), strictly
 REM AFTER the cross-process reingest lock is acquired, so it can never race a
 REM concurrent daily run mid-write. Do NOT rmdir the store here (outside the lock).
 cd /d "%REPO%"
-"%PY%" -m rag_mcp.cli ingest "%VAULT%" --db "%STORE%" --clean --embedder %RAG_MCP_EMBEDDER% >> "%LOG%" 2>&1
+"%PY%" -m rag_mcp.cli --embedder %RAG_MCP_EMBEDDER% ingest "%VAULT%" --db "%STORE%" --clean >> "%LOG%" 2>&1
 echo [%DATE% %TIME%] rag-mcp CLEAN rebuild DONE (exit %ERRORLEVEL%)>> "%LOG%"
