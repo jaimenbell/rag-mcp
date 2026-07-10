@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from rag_mcp.ingest import ingest
-from rag_mcp.search import MAX_K, search_knowledge
+from rag_mcp.search import MAX_K, MAX_QUERY_LEN, search_knowledge
 
 
 @pytest.fixture
@@ -38,6 +38,23 @@ def test_invalid_query_rejected(populated):
         res = search_knowledge(bad, k=3, store=store, corpus_root=root)
         assert res["ok"] is False
         assert res["error"]["type"] == "invalid_query"
+
+
+def test_oversized_query_rejected(populated):
+    store, root = populated
+    over = "a" * (MAX_QUERY_LEN + 1)
+    res = search_knowledge(over, k=3, store=store, corpus_root=root)
+    assert res["ok"] is False
+    assert res["error"]["type"] == "invalid_query"
+    assert str(MAX_QUERY_LEN) in res["error"]["message"]
+
+
+def test_query_at_max_length_allowed(populated):
+    store, root = populated
+    exactly = "dog " * (MAX_QUERY_LEN // 4)
+    exactly = exactly[:MAX_QUERY_LEN]
+    res = search_knowledge(exactly, k=3, store=store, corpus_root=root)
+    assert res["ok"] is True
 
 
 def test_empty_store_structured_error(store, tmp_path):

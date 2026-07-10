@@ -9,7 +9,8 @@ Reliability properties (the whole pitch), all proven by tests:
   * FAIL-SOFT   - a down/empty store, a bad query, or any internal error returns a
                   STRUCTURED error object. This function never raises; it cannot crash
                   the agent that calls it.
-  * BOUNDED     - k is clamped to [1, MAX_K].
+  * BOUNDED     - k is clamped to [1, MAX_K]; query length is capped at MAX_QUERY_LEN
+                  chars before it ever reaches the embedder.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_K = 20
+MAX_QUERY_LEN = 4000  # generous for a real search query; caps embedder input cost
 
 
 def _within_root(root: Path, source: str) -> bool:
@@ -55,6 +57,13 @@ def search_knowledge(
     """
     if not isinstance(query, str) or not query.strip():
         return _error("invalid_query", "query must be a non-empty string")
+
+    if len(query) > MAX_QUERY_LEN:
+        return _error(
+            "invalid_query",
+            f"query exceeds max length of {MAX_QUERY_LEN} characters "
+            f"(got {len(query)}); shorten the query",
+        )
 
     # Bound k.
     try:
