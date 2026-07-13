@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -124,4 +125,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Root-caused 2026-07-12: after the bge cutover (fastembed/onnxruntime +
+    # chromadb), the interpreter can hang past a clean `main()` return because
+    # those libs leave non-daemon background threads alive -- normal
+    # interpreter shutdown (which sys.exit() triggers) blocks joining them.
+    # The scheduled reingest/reingest-clean tasks then run past their
+    # ExecutionTimeLimit and get hard-killed by Task Scheduler, leaving the
+    # cross-process ReingestLock held by a still-"alive" PID for up to an
+    # hour -- which starves the weekly --clean run 30 min later (LockHeld)
+    # and, via the shared log file staying open that whole time, silently
+    # drops its log output too. All ingest work (incl. lock release) and
+    # stdout/stderr output are already complete by the time main() returns,
+    # so skip the graceful-shutdown thread joins entirely via os._exit();
+    # flush explicitly first since os._exit() bypasses the atexit stdio flush.
+    _exit_code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_exit_code)
