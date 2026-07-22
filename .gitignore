@@ -18,3 +18,7 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local scratch/dogfood artifacts - may contain vault-derived content, never commit
+scratch_*.json
+scratch_*.py
