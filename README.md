@@ -6,6 +6,8 @@ tags: [rag, retrieval, embeddings, mcp]
 
 # rag-mcp
 
+[![CI](https://github.com/jaimenbell/rag-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/jaimenbell/rag-mcp/actions/workflows/ci.yml)
+
 > A minimal, honest **RAG-over-a-corpus MCP retrieval tool**. One tool,
 > `search_knowledge(query, k)`, that embeds a query, vector-searches a local corpus, and
 > returns passages **with citations** (source + heading + chunk index) so answers are traceable.
@@ -50,7 +52,7 @@ Register via `mcp.yaml` (validated against mcp-factory's `Manifest` loader). The
 
 ## Tests
 ```bash
-python -m pytest        # 53 passed
+python -m pytest        # 60 passed
 ```
 
 ## Layout

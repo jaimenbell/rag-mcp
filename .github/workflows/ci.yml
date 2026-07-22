@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+
+      # NOTE: no -q flag here -- pyproject.toml's addopts already applies -q,
+      # and a second -q suppresses the final summary line the count gate parses.
+      - name: Run test suite
+        shell: bash
+        run: python -m pytest 2>&1 | tee pytest-output.txt
+
+      - name: Verify README test counts
+        run: python scripts/check_readme_counts.py pytest-output.txt
