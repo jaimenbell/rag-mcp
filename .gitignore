@@ -22,3 +22,6 @@ Thumbs.db
 # Local scratch/dogfood artifacts - may contain vault-derived content, never commit
 scratch_*.json
 scratch_*.py
+
+# local deployment config - never commit
+local-corpus.txt

@@ -10,7 +10,15 @@ REM         to drop orphaned chunks -- see reingest-clean.bat note below.
 REM ============================================================================
 
 set "REPO=C:\Users\jaime\projects\rag-mcp"
-set "VAULT=<your-corpus-path>"
+REM Corpus path comes from an UNTRACKED local file so the public repo stays
+REM generic (2026-07-22: the public-scrub sanitized a hardcoded path here and
+REM the nightly ingest silently ran against a placeholder). Create it once:
+REM   echo C:\path\to\your\corpus> local-corpus.txt
+if not exist "%REPO%\local-corpus.txt" (
+  echo [%DATE% %TIME%] FATAL: local-corpus.txt missing -- see reingest.bat header>> "%REPO%\logs\reingest.log"
+  exit /b 1
+)
+set /p VAULT=<"%REPO%\local-corpus.txt"
 REM CUTOVER 2026-07-02: bge-large-en-v1.5 store (1024-dim). Old MiniLM store
 REM kept at store.chroma for instant rollback (repoint STORE + EMBEDDER back).
 REM bge upsert takes ~2.5h CPU (vs ~11min MiniLM) -- 03:00 start finishes ~05:30.

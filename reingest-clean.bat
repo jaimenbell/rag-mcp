@@ -9,7 +9,12 @@ REM offset 30 min after the daily 03:00 task so they never collide).
 REM ============================================================================
 
 set "REPO=C:\Users\jaime\projects\rag-mcp"
-set "VAULT=<your-corpus-path>"
+REM Corpus path from the UNTRACKED local file (see reingest.bat header).
+if not exist "%REPO%\local-corpus.txt" (
+  echo [%DATE% %TIME%] FATAL: local-corpus.txt missing -- see reingest.bat header>> "%REPO%\logs\reingest.log"
+  exit /b 1
+)
+set /p VAULT=<"%REPO%\local-corpus.txt"
 REM CUTOVER 2026-07-02: bge store (see reingest.bat header). First clean rebuild
 REM (Sun 03:30) also purges the Wikilink-Scan noise chunks baked into the
 REM initial build before the ingest exclude landed.
