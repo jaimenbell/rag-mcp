@@ -68,3 +68,6 @@ rag_mcp/
 run_server.py   MCP entrypoint (referenced by mcp.yaml)
 mcp.yaml        manifest (mcp-factory model)
 ```
+
+<!-- MCP registry ownership marker -->
+mcp-name: io.github.jaimenbell/rag-mcp
