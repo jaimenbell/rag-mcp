@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.jaimenbell/rag-mcp",
-  "description": "Minimal, honest RAG-over-a-corpus MCP retrieval tool: search_knowledge(query, k) -> cited chunks. Local embeddings + embedded vector store. Auth-scoped, fail-soft, version-pinned.",
+  "description": "Minimal RAG-over-a-corpus MCP retrieval: search_knowledge returns cited chunks. Local embeddings.",
   "version": "0.1.0",
   "repository": {
     "url": "https://github.com/jaimenbell/rag-mcp",
