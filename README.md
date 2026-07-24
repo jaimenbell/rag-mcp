@@ -43,7 +43,9 @@ python -m rag_mcp.cli query "your question" --db ./store.chroma --corpus path/to
 
 # Run as an MCP server (stdio); configure via env first
 #   RAG_MCP_CORPUS_ROOT, RAG_MCP_DB_PATH, RAG_MCP_COLLECTION, RAG_MCP_EMBEDDER
-python run_server.py
+python run_server.py        # operational entrypoint (referenced by mcp.yaml)
+python -m rag_mcp           # same server, via the packaged console entry point
+rag-mcp                     # after `pip install jaimenbell-rag-mcp` -- console script
 ```
 
 ## As an MCP server
@@ -52,7 +54,7 @@ Register via `mcp.yaml` (validated against mcp-factory's `Manifest` loader). The
 
 ## Tests
 ```bash
-python -m pytest        # 60 passed
+python -m pytest        # 68 passed
 ```
 
 ## Layout
@@ -65,7 +67,8 @@ rag_mcp/
   server.py     MCP stdio server exposing search_knowledge
   config.py     env-driven Config
   cli.py        ingest + query CLI
-run_server.py   MCP entrypoint (referenced by mcp.yaml)
+  __main__.py   console entrypoint (`python -m rag_mcp` / `rag-mcp` script); fails loud on missing config
+run_server.py   operational MCP entrypoint (referenced by mcp.yaml)
 mcp.yaml        manifest (mcp-factory model)
 ```
 

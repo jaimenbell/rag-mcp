@@ -14,6 +14,9 @@ dependencies = [
     "PyYAML==6.0.3",
 ]
 
+[project.scripts]
+rag-mcp = "rag_mcp.__main__:main"
+
 [project.optional-dependencies]
 test = ["pytest==9.1.1"]
 # RAG_MCP_EMBEDDER=bge path (BAAI/bge-large-en-v1.5, ONNX via fastembed). Not
