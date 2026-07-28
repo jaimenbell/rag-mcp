@@ -15,22 +15,22 @@ cannot hold both — `VectorStore` now records `embed_dim` in collection metadat
 and raises `DimensionMismatchError` if you open a store with the wrong embedder.
 So the cutover is a REPOINT, not an in-place migration:
 
-- live MiniLM index: `C:\Users\jaime\projects\rag-mcp\store.chroma`
+- live MiniLM index: `C:\Users\<you>\projects\rag-mcp\store.chroma`
 - new bge index:     built as `store-bge.chroma` (see report for final location)
 
 ## Operator cutover steps (in order)
 
-1. **Merge** `feat/bge-embedder` into `master` in `C:\Users\jaime\projects\rag-mcp`
+1. **Merge** `feat/bge-embedder` into `master` in `C:\Users\<you>\projects\rag-mcp`
    (branch was developed in the `rag-mcp-bge` worktree; live checkout untouched).
 2. **Install the new dep** into the LIVE venv:
-   `C:\Users\jaime\projects\rag-mcp\.venv\Scripts\python -m pip install fastembed==0.8.0`
+   `C:\Users\<you>\projects\rag-mcp\.venv\Scripts\python -m pip install fastembed==0.8.0`
 3. **Move/copy the built bge store** into the live repo, e.g.
-   `C:\Users\jaime\projects\rag-mcp\store-bge.chroma` (or rebuild in place with
+   `C:\Users\<you>\projects\rag-mcp\store-bge.chroma` (or rebuild in place with
    `python -m rag_mcp.cli --embedder bge ingest "<your-corpus-path>" --db .\store-bge.chroma`
    — ~2.5h CPU). Note: the bge model weights cache in `%TEMP%\fastembed_cache`
    (~1.3GB); a `%TEMP%` purge forces a one-time re-download.
 4. **Flip the batch jobs** — in `reingest.bat` AND `reingest-clean.bat`:
-   - `set "STORE=C:\Users\jaime\projects\rag-mcp\store-bge.chroma"`
+   - `set "STORE=C:\Users\<you>\projects\rag-mcp\store-bge.chroma"`
    - `set "RAG_MCP_EMBEDDER=bge"`
    - pass `--embedder %RAG_MCP_EMBEDDER%` on the `rag_mcp.cli` line (the .bat
      currently sets the env var but the CLI takes the flag; the flag is what counts).
@@ -42,7 +42,7 @@ So the cutover is a REPOINT, not an in-place migration:
 5. **Flip the MCP server env** — wherever `run_server.py` gets its env
    (`~/.claude.json` entry / mcp.yaml `env:` block):
    - `RAG_MCP_EMBEDDER=bge`
-   - `RAG_MCP_DB_PATH=C:\Users\jaime\projects\rag-mcp\store-bge.chroma`
+   - `RAG_MCP_DB_PATH=C:\Users\<you>\projects\rag-mcp\store-bge.chroma`
    Restart the MCP server (restart Claude Code session) to pick it up.
 6. **Smoke test**:
    `python -m rag_mcp.cli --embedder bge query "dead-but-GREEN liveness gate" --db .\store-bge.chroma --corpus "<your-corpus-path>" -k 3`

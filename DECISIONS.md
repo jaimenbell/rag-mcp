@@ -22,7 +22,7 @@ so every answer is traceable. Built to slot into the `mcp-factory` manifest mode
 
 ## Build location
 
-`C:/Users/jaime/projects/rag-mcp` - a **new, isolated local repo** (`git init`).
+`C:/Users/<you>/projects/rag-mcp` - a **new, isolated local repo** (`git init`).
 Sole-writer-safe; does not touch sales-reps, alphahive, or ai-content-factory.
 
 ## Decisions

@@ -9,7 +9,7 @@ REM         Run a clean rebuild (delete store.chroma then ingest) occasionally
 REM         to drop orphaned chunks -- see reingest-clean.bat note below.
 REM ============================================================================
 
-set "REPO=C:\Users\jaime\projects\rag-mcp"
+set "REPO=%USERPROFILE%\projects\rag-mcp"
 REM Corpus path comes from an UNTRACKED local file so the public repo stays
 REM generic (2026-07-22: the public-scrub sanitized a hardcoded path here and
 REM the nightly ingest silently ran against a placeholder). Create it once:
@@ -22,7 +22,7 @@ set /p VAULT=<"%REPO%\local-corpus.txt"
 REM CUTOVER 2026-07-02: bge-large-en-v1.5 store (1024-dim). Old MiniLM store
 REM kept at store.chroma for instant rollback (repoint STORE + EMBEDDER back).
 REM bge upsert takes ~2.5h CPU (vs ~11min MiniLM) -- 03:00 start finishes ~05:30.
-set "STORE=C:\Users\jaime\projects\rag-mcp\store-bge.chroma"
+set "STORE=%REPO%\store-bge.chroma"
 set "PY=%REPO%\.venv\Scripts\python.exe"
 set "LOG=%REPO%\logs\reingest.log"
 
