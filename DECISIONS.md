@@ -11,7 +11,7 @@ status: phase-0-complete
 A minimal, honest **RAG-over-a-corpus MCP retrieval tool**. One MCP tool,
 `search_knowledge(query, k)`, that embeds a query, retrieves top-k chunks from a
 local vector store, and returns the text **with citations** (source path + heading)
-so every answer is traceable. Built to slot into the [[mcp-factory]] manifest model.
+so every answer is traceable. Built to slot into the `mcp-factory` manifest model.
 
 > [!important] Hard rails
 > - **$0 / LOCAL only.** No paid embedding API (no OpenAI/Cohere). All inference is local CPU.
