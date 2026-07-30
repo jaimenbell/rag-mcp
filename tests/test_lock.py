@@ -21,6 +21,7 @@ from rag_mcp.lock import (
     FULL_REEMBED_OBSERVED_S,
     LockHeld,
     ReingestLock,
+    live_holder,
 )
 
 
@@ -116,6 +117,44 @@ def test_default_ceiling_exceeds_observed_full_reembed():
     no symptom until the index is already corrupt.
     """
     assert DEFAULT_STALE_AFTER_S >= 2 * FULL_REEMBED_OBSERVED_S
+
+
+def test_live_holder_reports_a_running_writer(tmp_path):
+    """live_holder is how a caller asks "is production writing this store NOW?"."""
+    store = tmp_path / "store.chroma"
+    (tmp_path / "store.chroma.lock").write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "acquired": datetime.now(timezone.utc).isoformat(),
+                "host": "h",
+            }
+        ),
+        encoding="utf-8",
+    )
+    holder = live_holder(store)
+    assert holder is not None
+    assert holder["pid"] == os.getpid()
+
+
+def test_live_holder_is_none_when_no_lock_exists(tmp_path):
+    assert live_holder(tmp_path / "store.chroma") is None
+
+
+def test_live_holder_ignores_a_dead_writer(tmp_path):
+    """A leftover lock from a crashed run is not a live writer."""
+    store = tmp_path / "store.chroma"
+    (tmp_path / "store.chroma.lock").write_text(
+        json.dumps(
+            {
+                "pid": _dead_pid(),
+                "acquired": datetime.now(timezone.utc).isoformat(),
+                "host": "h",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert live_holder(store) is None
 
 
 def test_fresh_live_lock_not_reclaimed(tmp_path):

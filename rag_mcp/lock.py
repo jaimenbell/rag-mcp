@@ -113,6 +113,31 @@ def _is_stale(holder: dict | None, stale_after_s: float) -> bool:
     return (time.time() - ts) > stale_after_s
 
 
+def live_holder(
+    store_path: str | os.PathLike,
+    *,
+    stale_after_s: float = DEFAULT_STALE_AFTER_S,
+) -> dict | None:
+    """The lock holder if a LIVE process is mid-write against *store_path*, else None.
+
+    Lets a caller distinguish "a scheduled reingest is writing this store right
+    now" from "nothing is running". The test suite's production-store guard needs
+    exactly that: it detects pollution by fingerprinting the real store, and a
+    concurrent reingest is byte-indistinguishable from a test that wrote there.
+
+    Deliberately reuses ``_is_stale`` rather than re-deriving liveness, so this
+    can never disagree with what :meth:`ReingestLock.acquire` considers live --
+    a second, drifting definition of "running" is how this kind of check starts
+    lying.
+    """
+    store = Path(store_path)
+    lock_path = store.with_name(store.name + ".lock")
+    holder = _read_holder(lock_path)
+    if holder is None or _is_stale(holder, stale_after_s):
+        return None
+    return holder
+
+
 def _write_lock(fd: int) -> dict:
     holder = {
         "pid": os.getpid(),

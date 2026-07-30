@@ -8,10 +8,12 @@ retrieval wiring without downloading a model.
 from __future__ import annotations
 
 import uuid
+import warnings
 from pathlib import Path
 
 import pytest
 
+from rag_mcp.lock import live_holder
 from rag_mcp.store import HashEmbedder, VectorStore
 
 # Production store guard: the live index is production data. This fleet has a
@@ -41,11 +43,51 @@ def _store_fingerprint(path: Path):
     return tuple(entries)
 
 
+# Sentinel: this store had a live production writer, so it was not fingerprinted.
+# Distinct from None, which _store_fingerprint returns for a store that is absent.
+_UNGUARDED = object()
+
+
+class StoreGuardSkipped(UserWarning):
+    """Raised as a warning when the production-store guard could not run.
+
+    A dedicated class (not a bare print) because pytest CAPTURES stdout from
+    fixtures and only replays it on failure -- so a `print` here is invisible on
+    a green run, which is exactly when you need to know coverage was reduced.
+    Warnings land in the summary that pytest shows by default, including under
+    the `-q` in this project's addopts.
+    """
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _guard_real_store():
-    before = {p: _store_fingerprint(p) for p in _REAL_STORES}
+    before = {}
+    for path in _REAL_STORES:
+        # The reingest schtask fires every 15 minutes as of 2026-07-30, so a
+        # scheduled ingest may well be writing the live store during a test run.
+        # Its writes move the fingerprint exactly like pollution would, and the
+        # guard cannot tell them apart -- so it would fail on production activity
+        # it has no business policing. Skip only that store, and only while a
+        # genuinely live writer holds the lock.
+        holder = live_holder(path)
+        if holder is not None:
+            # LOUD on purpose. A guard that skips quietly is worse than no guard:
+            # it reads as coverage while providing none.
+            warnings.warn(
+                f"STORE GUARD SKIPPED for {path.name}: a live reingest holds the "
+                f"lock (pid={holder.get('pid')}, since {holder.get('acquired')}). "
+                f"Pollution of this store is NOT covered by this run -- re-run "
+                f"once the ingest finishes for full coverage.",
+                StoreGuardSkipped,
+                stacklevel=1,
+            )
+            before[path] = _UNGUARDED
+        else:
+            before[path] = _store_fingerprint(path)
     yield
     for path in _REAL_STORES:
+        if before[path] is _UNGUARDED:
+            continue
         assert _store_fingerprint(path) == before[path], (
             f"TEST POLLUTION: real store {path} was modified during the test "
             f"session (fingerprint changed). Tests must use tmp dirs only."
