@@ -29,7 +29,25 @@ Fully local + **$0** (no paid embedding API).
 |---|---|
 | Embeddings | local ONNX `all-MiniLM-L6-v2` (384-dim, CPU, $0) -- **default**. `bge-large-en-v1.5` (1024-dim, 512-token context) available opt-in via `RAG_MCP_EMBEDDER=bge`; see [CUTOVER.md](./CUTOVER.md). |
 | Vector store | ChromaDB embedded `PersistentClient` (zero-infra) |
-| Server | `mcp` Python SDK, stdio transport |
+| Server | `mcp` Python SDK 2.x, stdio transport, protocol revision **2026-07-28** |
+
+## Protocol revision
+Pinned to `mcp==2.0.0`, the first SDK release implementing MCP protocol revision
+**2026-07-28**. The server serves **both eras on the same stdio connection** -- the
+client's first frame picks:
+
+| Client opens with | Negotiated revision | Notes |
+|---|---|---|
+| a per-request `_meta` envelope (or a `server/discover` probe) | `2026-07-28` | stateless per-request envelope; no `initialize` |
+| the classic `initialize` handshake | `2025-11-25` | handshake era caps here -- expected, not a downgrade |
+
+`2026-07-28` is **not reachable via the `initialize` handshake**; it is a "modern"
+revision reached through `server/discover` or an inline `_meta` version stamp. Era
+selection is automatic and per-connection -- there is no server-side flag.
+
+`tests/test_protocol_version.py` asserts both paths end-to-end, so a dependency
+rollback that silently drops the server to an older revision fails CI instead of
+passing quietly.
 
 ## Quick start
 ```bash
@@ -54,7 +72,7 @@ Register via `mcp.yaml` (validated against mcp-factory's `Manifest` loader). The
 
 ## Tests
 ```bash
-python -m pytest        # 75 passed
+python -m pytest        # 88 passed
 ```
 
 ## Layout

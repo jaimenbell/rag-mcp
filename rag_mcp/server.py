@@ -24,8 +24,6 @@ from mcp.server.stdio import stdio_server
 
 from .search import MAX_K, search_knowledge
 
-server = Server("rag-mcp")
-
 # Lazily-opened store/root so importing the module never touches the model or disk.
 _STATE: dict[str, Any] = {"store": None, "root": None}
 
@@ -38,7 +36,9 @@ _TOOL = types.Tool(
         "corpus root and fail-soft: a down/empty store returns a structured error, never an "
         "exception. Use when asked to look something up in the knowledge base / docs."
     ),
-    inputSchema={
+    # snake_case as of mcp 2.0.0 (the camelCase alias still constructs, but
+    # attribute access is snake_case only); serializes to "inputSchema" on the wire.
+    input_schema={
         "type": "object",
         "properties": {
             "query": {
@@ -84,25 +84,36 @@ def _run_search(arguments: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-@server.list_tools()
-async def list_tools() -> list[types.Tool]:
-    return [_TOOL]
+async def list_tools(
+    ctx: Any = None, params: types.PaginatedRequestParams | None = None
+) -> types.ListToolsResult:
+    return types.ListToolsResult(tools=[_TOOL])
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict | None) -> list[types.TextContent]:
-    if name != "search_knowledge":
+async def call_tool(
+    ctx: Any, params: types.CallToolRequestParams
+) -> types.CallToolResult:
+    if params.name != "search_knowledge":
         payload: dict[str, Any] = {
             "ok": False,
-            "error": {"type": "unknown_tool", "message": f"Unknown tool: {name}"},
+            "error": {"type": "unknown_tool", "message": f"Unknown tool: {params.name}"},
             "results": [],
         }
     else:
         # Run the (synchronous, potentially slow: embed + vector query) search off
         # the event-loop thread. Blocking the loop here starves the stdio transport
         # streams -- the response can't be written until the handler yields.
-        payload = await anyio.to_thread.run_sync(_run_search, arguments or {})
-    return [types.TextContent(type="text", text=json.dumps(payload))]
+        payload = await anyio.to_thread.run_sync(_run_search, params.arguments or {})
+    # Fail-soft contract unchanged: an unknown tool / config error is a structured
+    # ok:false PAYLOAD, not a protocol-level error, so is_error stays False.
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=json.dumps(payload))]
+    )
+
+
+# mcp 2.0.0 replaced the @server.list_tools()/@server.call_tool() decorators with
+# constructor handler kwargs (handlers take (ctx, params) and return Result models).
+server = Server("rag-mcp", on_list_tools=list_tools, on_call_tool=call_tool)
 
 
 def _warm() -> None:

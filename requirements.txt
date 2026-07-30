@@ -1,6 +1,8 @@
 # rag-mcp runtime + test deps - version-pinned (reliability rail)
 # Installed/verified 2026-06-29 on Python 3.12, Windows.
-mcp==1.28.1
+# 2026-07-30: 2.0.0 is the first SDK implementing protocol revision 2026-07-28.
+# Must stay in lockstep with the pyproject pin (tests/test_protocol_version.py).
+mcp==2.0.0
 chromadb==1.5.9
 PyYAML==6.0.3
 pytest==9.1.1
