@@ -8,15 +8,33 @@ REM Registered as scheduled task "rag-mcp-reingest". Intended cadence: EVERY 15
 REM MINUTES. It used to be daily 03:00, which meant a note written at 03:05 was
 REM invisible to search_knowledge for nearly 24 hours.
 REM
-REM Cost, measured 2026-07-30 on the live 2808-file / 26.6 MiB corpus:
-REM   tick with NO changes : ~0.7s   (walk + read + sha256 of every file)
-REM   full re-embed        : ~2h33m  (50,109 chunks at ~5.5 chunks/sec, bge CPU)
-REM A normal tick costs about a second; only genuinely edited files are
-REM re-embedded, at roughly 5.5 chunks/sec.
+REM Cost, RE-MEASURED IN PRODUCTION 2026-07-30 on the live 2810-file corpus
+REM (the earlier figures here were estimates and both were wrong):
+REM   tick with NO changes : ~1.8s   (walk + read + sha256 of every file, plus
+REM                                   interpreter start and bge model load).
+REM                                   Measured 1.836s / 1.796s back-to-back with
+REM                                   files_unchanged=2810, chunks_added=0.
+REM                                   The old "~0.7s" here was 2.6x optimistic
+REM                                   and is what made a "sub-second" acceptance
+REM                                   criterion get written into three handoffs.
+REM   full re-embed        : ~2h43m  (lock acquired 10:15:02, manifest written
+REM                                   ~12:58; 50,311 chunks, bge CPU). The old
+REM                                   "~2h33m" understated it.
+REM A normal tick costs about two seconds; only genuinely edited files are
+REM re-embedded. A tick that re-embeds one changed note measured ~9.5s.
 REM
-REM FIRST RUN AFTER DEPLOY has no manifest and therefore does a FULL ~2.5h
-REM embed. That is expected and self-limiting: ticks firing while it runs hit the
-REM cross-process lock and exit 3 (a no-op) -- they never queue or collide.
+REM FIRST RUN AFTER DEPLOY has no manifest and therefore does a FULL ~2.7h
+REM embed. That is expected and self-limiting -- but NOT by the mechanism this
+REM comment used to claim. The scheduled task "rag-mcp-reingest" is registered
+REM MultipleInstances=IgnoreNew, so Task Scheduler REFUSES an overlapping tick
+REM before cmd.exe or python ever start: it records LastTaskResult 2147946720
+REM (0x800710E0) and writes NOTHING to this log. Verified 2026-07-30, when the
+REM 10:15 full embed ran ~2h43m and the 10:30/10:45/11:00/11:15/... ticks left
+REM no trace at all. The cross-process lock + exit 3 path below IS real and is
+REM the belt to that braces -- it catches a MANUAL run, or the weekly
+REM reingest-clean.bat, overlapping a scheduled one -- but it is not what
+REM protects the scheduled cadence from itself. A silent gap in this log during
+REM a long embed is therefore EXPECTED, not a sign the schedule died.
 REM
 REM Incremental ingest also PRUNES, which the old upsert-only run never did:
 REM chunks of deleted/renamed notes, and trailing chunks of notes that got
