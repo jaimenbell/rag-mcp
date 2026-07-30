@@ -1,9 +1,3 @@
----
-title: rag-mcp
-type: project-readme
-tags: [rag, retrieval, embeddings, mcp]
----
-
 # rag-mcp
 
 [![CI](https://github.com/jaimenbell/rag-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/jaimenbell/rag-mcp/actions/workflows/ci.yml)
