@@ -47,21 +47,30 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         )
         # CLI --exclude flags AUGMENT the built-in defaults; they do not replace them.
         exclude_prefixes = EXCLUDE_PREFIXES + tuple(args.exclude)
-        report = ingest(args.corpus_dir, store, exclude_prefixes=exclude_prefixes)
+        report = ingest(
+            args.corpus_dir,
+            store,
+            exclude_prefixes=exclude_prefixes,
+            # --clean just wiped the store (and its manifest), so there is
+            # nothing to skip against; keep the flag honest rather than relying
+            # on the manifest happening to be gone.
+            incremental=not args.full and not args.clean,
+        )
     finally:
         lock.release()
-    print(
-        json.dumps(
-            {
-                "files_seen": report.files_seen,
-                "files_ingested": report.files_ingested,
-                "files_skipped": report.files_skipped,
-                "chunks_added": report.chunks_added,
-                "store_count": store.count(),
-            },
-            indent=2,
-        )
-    )
+    summary = {
+        "files_seen": report.files_seen,
+        "files_ingested": report.files_ingested,
+        "files_unchanged": report.files_unchanged,
+        "files_skipped": report.files_skipped,
+        "chunks_added": report.chunks_added,
+        "chunks_deleted": report.chunks_deleted,
+        "incremental": report.incremental,
+        "store_count": store.count(),
+    }
+    # --quiet keeps a high-frequency schedule's log readable: one line per run
+    # instead of a 10-line block (at a 15-minute cadence that is ~96 runs/day).
+    print(json.dumps(summary) if args.quiet else json.dumps(summary, indent=2))
     return 0
 
 
@@ -110,6 +119,22 @@ def main(argv: list[str] | None = None) -> int:
             "for deleted/renamed vault notes. The delete runs AFTER the reingest "
             "lock is acquired, so it can never race a concurrent write."
         ),
+    )
+    p_ing.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "re-embed every file, ignoring the incremental manifest. Ingest is "
+            "incremental by DEFAULT: files whose content hash is unchanged since "
+            "the last run are not re-embedded, which is what makes frequent "
+            "scheduling affordable. Use --full to force a rebuild in place "
+            "(unlike --clean it does not delete the store first)."
+        ),
+    )
+    p_ing.add_argument(
+        "--quiet",
+        action="store_true",
+        help="emit the run summary as a single JSON line (for frequent schedules).",
     )
     p_ing.set_defaults(func=_cmd_ingest)
 

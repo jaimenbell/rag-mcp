@@ -161,6 +161,10 @@ class VectorStore:
         embedder: Embedder,
     ) -> None:
         self.embedder = embedder
+        # Kept so callers (e.g. the ingest manifest) can locate the store's own
+        # directory and collection without threading them through separately.
+        self.path = path
+        self.collection_name = collection_name
         if path is None:
             self._client = chromadb.EphemeralClient()
         else:
@@ -199,6 +203,16 @@ class VectorStore:
             metadatas=list(metadatas),
             embeddings=embeddings,
         )
+
+    def delete(self, *, ids: Sequence[str]) -> None:
+        """Remove chunks by id. Used to prune stale chunks during incremental ingest.
+
+        Deleting an id that is not present is a no-op in Chroma, so callers do
+        not need to check first.
+        """
+        if not ids:
+            return
+        self._collection.delete(ids=list(ids))
 
     def query(self, text: str, k: int = 5) -> list[dict]:
         if k <= 0:

@@ -14,10 +14,20 @@ import pytest
 
 from rag_mcp.store import HashEmbedder, VectorStore
 
-# Production store guard: the live index (~44k chunks) is production data. This
-# fleet has a recurring "tests pollute prod artifacts" problem, so we assert the
-# real store dir is byte-for-byte untouched by the whole test session.
-_REAL_STORE = Path(__file__).resolve().parent.parent / "store.chroma"
+# Production store guard: the live index is production data. This fleet has a
+# recurring "tests pollute prod artifacts" problem, so we assert the real store
+# dirs are byte-for-byte untouched by the whole test session.
+#
+# BOTH stores are watched. Until 2026-07-30 this guarded only `store.chroma`,
+# which the 2026-07-02 bge cutover had already demoted to a stale 184 KB
+# rollback copy -- the actual live index moved to `store-bge.chroma` and was
+# guarded by nothing. The guard was pointed at the wrong artifact and so could
+# not have detected pollution of the store it claimed to protect.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REAL_STORES = (
+    _REPO_ROOT / "store-bge.chroma",  # live (bge, 1024-dim) since 2026-07-02
+    _REPO_ROOT / "store.chroma",  # legacy MiniLM store, kept for rollback
+)
 
 
 def _store_fingerprint(path: Path):
@@ -33,13 +43,13 @@ def _store_fingerprint(path: Path):
 
 @pytest.fixture(scope="session", autouse=True)
 def _guard_real_store():
-    before = _store_fingerprint(_REAL_STORE)
+    before = {p: _store_fingerprint(p) for p in _REAL_STORES}
     yield
-    after = _store_fingerprint(_REAL_STORE)
-    assert after == before, (
-        f"TEST POLLUTION: real store {_REAL_STORE} was modified during the test "
-        f"session (fingerprint changed). Tests must use tmp dirs only."
-    )
+    for path in _REAL_STORES:
+        assert _store_fingerprint(path) == before[path], (
+            f"TEST POLLUTION: real store {path} was modified during the test "
+            f"session (fingerprint changed). Tests must use tmp dirs only."
+        )
 
 
 @pytest.fixture

@@ -53,8 +53,12 @@ passing quietly.
 ```bash
 python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt
 
-# Ingest a corpus (markdown)
+# Ingest a corpus (markdown). Incremental by default: only files whose content
+# changed since the last run are re-embedded.
 python -m rag_mcp.cli ingest path/to/docs --db ./store.chroma
+
+# Force a rebuild in place (ignore the manifest, re-embed everything)
+python -m rag_mcp.cli ingest path/to/docs --db ./store.chroma --full
 
 # One-off query (corpus root = the auth scope)
 python -m rag_mcp.cli query "your question" --db ./store.chroma --corpus path/to/docs -k 5
@@ -66,13 +70,40 @@ python -m rag_mcp           # same server, via the packaged console entry point
 rag-mcp                     # after `pip install jaimenbell-rag-mcp` -- console script
 ```
 
+## Keeping the index fresh (incremental ingest)
+Ingest is **incremental by default**. A manifest inside the store dir records a
+SHA-256 of each file's decoded text; a run re-embeds only what actually changed,
+and prunes what upsert alone never could (chunks of deleted/renamed notes, and
+trailing chunks of notes that got shorter).
+
+Measured on a live 2808-file / 26.6 MiB corpus (bge, CPU):
+
+| Run | Cost |
+|---|---|
+| tick with no changes | **~0.7s** (walk + read + hash everything) |
+| full re-embed | ~2h33m (50,109 chunks at ~5.5 chunks/sec) |
+
+That is what makes a frequent schedule affordable: `reingest.bat` is meant to run
+**every 15 minutes** instead of once daily at 03:00, which had left a note written
+at 03:05 invisible to `search_knowledge` for nearly 24 hours.
+
+The manifest is only trusted when the **run identity** matches -- embedder, embedding
+dimension, collection and chunking parameters. Change any of them and every file is
+re-embedded, so an embedder swap can never be silently half-applied. A missing,
+corrupt, or mismatched manifest, or a manifest against an empty store, all degrade
+to a full rebuild; nothing degrades to a wrong skip.
+
+`--full` rebuilds in place (ignores the manifest, keeps the store); `--clean`
+deletes the store first. Both still WRITE a manifest, so the next run is cheap.
+`reingest-clean.bat` (weekly) remains a belt-and-braces reset.
+
 ## As an MCP server
 Register via `mcp.yaml` (validated against mcp-factory's `Manifest` loader). The tool is
 `search_knowledge(query, k)`; it reads the store configured by the `RAG_MCP_*` env vars.
 
 ## Tests
 ```bash
-python -m pytest        # 88 passed
+python -m pytest        # 110 passed
 ```
 
 ## Layout
@@ -80,7 +111,8 @@ python -m pytest        # 88 passed
 rag_mcp/
   chunking.py   heading-scoped, overlapping markdown chunks
   store.py      VectorStore (Chroma) + Embedder protocol (MiniLM default + BgeEmbedder opt-in + offline HashEmbedder)
-  ingest.py     idempotent ingest pipeline with source/heading/chunk-index metadata
+  ingest.py     idempotent ingest pipeline with source/heading/chunk-index metadata; incremental by default
+  manifest.py   per-file content hashes -> skip unchanged files, prune stale chunks
   search.py     search_knowledge: cited, auth-scoped, fail-soft, bounded
   server.py     MCP stdio server exposing search_knowledge
   config.py     env-driven Config

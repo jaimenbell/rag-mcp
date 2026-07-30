@@ -109,3 +109,67 @@ protocol.
 > thin wrapper over the same lowlevel `Server` and negotiates identically, so it buys no
 > protocol capability. Staying on the lowlevel `Server` keeps the diff minimal and the
 > mcp-factory manifest fit unchanged.
+
+## Incremental ingest / closing the reingest window (2026-07-30)
+
+### Problem
+`reingest.bat` ran once daily at 03:00 and **re-embedded the entire corpus every
+run** -- there was no mtime check, no hash check and no manifest. Chunk ids are
+deterministic (`<rel>::<idx>`) so upsert kept the result correct, but the whole
+cost of a run was redone from scratch: measured 2026-07-30, 50,109 chunks in
+2h32m53s (~5.5 chunks/sec on the bge CPU path).
+
+That cost is what forced the once-daily cadence, and the cadence is what created
+the window: a note written at 03:05 was invisible to `search_knowledge` for
+**nearly 24 hours**.
+
+### Fix
+A manifest (`ingest-manifest.json`, inside the store dir) records a SHA-256 of
+each file's decoded text plus its chunk count. Ingest is now incremental by
+default and skips the chunk+embed+upsert for any file whose hash is unchanged.
+
+Measured on the live 2808-file / 26.6 MiB corpus: a tick with **no** changes costs
+**0.68s** (walk + read + hash of every file). Only genuinely edited files are
+re-embedded, at ~5.5 chunks/sec.
+
+| | before | after |
+|---|---|---|
+| cost of a run with no changes | ~2h33m | **~0.7s** |
+| cost of a day's churn (~19 files, ~533 chunks) | ~2h33m | **~1.6 min** |
+| affordable cadence | daily | **every 15 min** |
+| worst-case invisibility window | ~24h | **~15 min** |
+
+Hashing the DECODED TEXT, not mtime: mtime moves when content does not (touch,
+sync, restore) and can fail to move when content does (same-second writes,
+archive extraction). Reading every file costs 0.23s total, so there is no reason
+to accept mtime's weaker guarantee.
+
+### Pruning (a latent bug fixed on the way)
+Upsert only ever overwrote ids `0..n-1`; it never removed anything. So a note that
+got **shorter** left orphaned trailing chunks in the index, and a **deleted or
+renamed** note left all of its chunks. Only the weekly `--clean` rebuild cleared
+them. The manifest knows the previous chunk count per file, so incremental ingest
+now prunes both cases on every run.
+
+### Trust rules
+The manifest is honored only when the **run identity** matches: embedder class,
+embedding dimension, collection name, and chunking parameters. This is the
+2026-07-02 MiniLM -> bge cutover class of bug -- a manifest written by a different
+embedder must never authorize a skip. Missing, corrupt, wrong-version or
+mismatched-identity manifests, and a populated manifest against an empty store,
+ALL degrade to a full re-embed. Every failure mode degrades to doing too much
+work, never to a wrong skip, because a wrong skip leaves a note permanently stale
+in the index with no symptom.
+
+The manifest lives inside the store directory so `--clean`'s rmtree drops both
+together and they cannot outlive each other. It is written atomically
+(tmp + `os.replace`) -- a torn manifest could claim a file is embedded when it is
+not. `--full` and `--clean` do not READ the manifest but still WRITE one, so a
+rebuild does not force the next scheduled run to be full as well.
+
+### Also fixed
+`tests/conftest.py`'s production-store guard watched `store.chroma`, which the
+2026-07-02 bge cutover had demoted to a stale 184 KB rollback copy. The live index
+(`store-bge.chroma`, ~799 MB) was guarded by nothing -- the guard was pointed at
+the wrong artifact and could not have detected pollution of the store it claimed
+to protect. It now fingerprints both.

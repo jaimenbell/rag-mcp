@@ -1,11 +1,22 @@
 @echo off
 REM ============================================================================
 REM rag-mcp WEEKLY CLEAN rebuild routine
-REM Deletes the Chroma store then re-ingests from scratch. Unlike the daily
-REM upsert (reingest.bat), a clean rebuild PRUNES chunks for vault notes that
-REM were deleted/renamed since the last full build (upsert never removes those).
-REM Registered as scheduled task "rag-mcp-reingest-clean" (weekly Sun 03:30,
-REM offset 30 min after the daily 03:00 task so they never collide).
+REM Deletes the Chroma store then re-ingests from scratch.
+REM Registered as scheduled task "rag-mcp-reingest-clean" (weekly Sun 03:30).
+REM
+REM 2026-07-30: this is now a BELT-AND-BRACES rebuild, not the only way to prune.
+REM reingest.bat became incremental and prunes deleted/renamed notes and trailing
+REM chunks of shortened notes on every tick, so orphans no longer accumulate for
+REM a week. This full rebuild still earns its place as a periodic reset: it
+REM recovers from a corrupt store, an embedder change, or any manifest/store
+REM desync, none of which an incremental run is guaranteed to notice.
+REM
+REM Lock interaction with the 15-minute incremental task: both take the SAME
+REM cross-process lock, so they can never corrupt each other. Whichever starts
+REM first wins; the other exits 3 as a no-op. A ~1s tick therefore has a small
+REM (~0.1%) chance of making this weekly rebuild skip a week -- acceptable now
+REM that pruning no longer depends on it. It also means the ~2.5h rebuild
+REM silently no-ops the incremental ticks for its duration, which is correct.
 REM ============================================================================
 
 set "REPO=%USERPROFILE%\projects\rag-mcp"
