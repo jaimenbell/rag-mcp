@@ -27,7 +27,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # "python -m pytest        # 53 passed" -- the comment is the claim.
 CLAIM_RE = re.compile(r"pytest\s*#\s*(\d+)\s+passed")
-SUMMARY_RE = re.compile(r"(\d+) passed(?:, \d+ skipped)? in [\d.]+s")
+# A real pytest summary can carry other comma-separated outcome fields
+# (warning(s), skipped, xfailed, xpassed, deselected, error(s), ...) in any
+# order/combination around "passed" -- tolerate any number of them while
+# still anchoring on the passed count itself and requiring the line end in
+# "in <time>s".
+SUMMARY_RE = re.compile(r"(\d+) passed(?:, \d+ \w+)* in [\d.]+s")
 
 
 def parse_pytest_summary(text):
