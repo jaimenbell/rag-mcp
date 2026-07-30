@@ -38,3 +38,22 @@ jobs:
 
       - name: Verify README test counts
         run: python scripts/check_readme_counts.py pytest-output.txt
+
+      # Dependency CVE scan. WARN-ONLY on purpose: this is the first run, so
+      # the baseline is unknown, and a known-unfixable finding is already
+      # expected -- chromadb 1.5.9 carries CVE-2026-45829 with no patched
+      # release available (see tests/test_embedded_only_invariant.py for why
+      # it is unreachable in our embedded-only deployment). Gating now would
+      # block every build on a finding we cannot act on.
+      #
+      # To gate later: drop continue-on-error, set exit-code to "1", and add
+      # a .trivyignore entry for any accepted-risk CVE with a dated rationale.
+      - name: Dependency vulnerability scan (warn-only)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          exit-code: "0"
