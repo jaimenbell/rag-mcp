@@ -54,7 +54,7 @@ Register via `mcp.yaml` (validated against mcp-factory's `Manifest` loader). The
 
 ## Tests
 ```bash
-python -m pytest        # 68 passed
+python -m pytest        # 75 passed
 ```
 
 ## Layout
