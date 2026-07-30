@@ -16,7 +16,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from rag_mcp.cli import main
-from rag_mcp.lock import LockHeld, ReingestLock
+from rag_mcp.lock import (
+    DEFAULT_STALE_AFTER_S,
+    FULL_REEMBED_OBSERVED_S,
+    LockHeld,
+    ReingestLock,
+)
 
 
 def _dead_pid() -> int:
@@ -77,6 +82,40 @@ def test_stale_lock_age_ceiling_reclaimed(tmp_path):
     with ReingestLock(store, stale_after_s=2 * 60 * 60):  # 2h ceiling, lock is 5h old
         holder = json.loads(lock_file.read_text(encoding="utf-8"))
         assert datetime.fromisoformat(holder["acquired"]) > datetime.fromisoformat(old)
+
+
+def test_live_holder_mid_full_reembed_not_reclaimed(tmp_path):
+    """A live run that has held the lock longer than 2h must NOT be stolen.
+
+    Regression for 2026-07-30: DEFAULT_STALE_AFTER_S was 2h while a full
+    re-embed of the live corpus measured 2h32m53s. At the new 15-minute
+    cadence the tick firing at the 2h mark saw a LIVE holder, applied the age
+    ceiling anyway, and reclaimed the lock -- starting a SECOND concurrent
+    writer against the same Chroma store. That is precisely the corruption
+    this module exists to prevent, and it was reachable on every first run
+    after deploy (no manifest -> full embed -> >2h).
+    """
+    store = tmp_path / "store.chroma"
+    lock_file = tmp_path / "store.chroma.lock"
+    # Live pid, held 3h: past the old ceiling but still a legitimate full embed.
+    held_since = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    lock_file.write_text(
+        json.dumps({"pid": os.getpid(), "acquired": held_since, "host": "h"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(LockHeld):
+        ReingestLock(store).acquire()  # DEFAULT ceiling, not an override
+
+
+def test_default_ceiling_exceeds_observed_full_reembed():
+    """Pin the RELATIONSHIP, not the bare number.
+
+    The ceiling is only safe while it clears the longest legitimate run. If the
+    corpus grows enough to slow a full re-embed toward the ceiling, this fails
+    and forces the ceiling up -- instead of a concurrent writer appearing with
+    no symptom until the index is already corrupt.
+    """
+    assert DEFAULT_STALE_AFTER_S >= 2 * FULL_REEMBED_OBSERVED_S
 
 
 def test_fresh_live_lock_not_reclaimed(tmp_path):

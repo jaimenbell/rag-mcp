@@ -10,8 +10,9 @@ Design:
   * Atomic create via ``os.open(O_CREAT | O_EXCL)`` -- no TOCTOU window.
   * Lock file sits next to the store (same volume) and holds PID + ISO timestamp.
   * A held lock is honoured ONLY if the holder looks alive: reclaim (steal) the
-    lock when the holder PID is dead OR the lock is older than ``stale_after``
-    (reingest takes ~13 min; ceiling defaults to 2 h).
+    lock when the holder PID is dead OR the lock is older than ``stale_after``.
+    The age ceiling overrides liveness, so it MUST exceed the longest legitimate
+    run -- a full re-embed, ~2h33m as of 2026-07-30. Ceiling defaults to 6 h.
   * On a live conflict we FAIL FAST (raise :class:`LockHeld`) -- callers exit
     non-zero and let the scheduler retry next cycle. We never queue or block.
 """
@@ -24,9 +25,19 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Default staleness ceiling: a real reingest takes ~13 min. 2 h is a generous
-# ceiling that reclaims a genuinely wedged lock without racing a slow-but-live run.
-DEFAULT_STALE_AFTER_S = 2 * 60 * 60
+# Longest LEGITIMATE run: a full re-embed of the live corpus, measured 2026-07-30
+# at 2h32m53s (50,109 chunks, ~5.5 chunks/sec on bge CPU). Every first run after a
+# deploy pays this, because there is no manifest yet to skip against.
+FULL_REEMBED_OBSERVED_S = 2 * 60 * 60 + 33 * 60
+
+# Default staleness ceiling. MUST clear FULL_REEMBED_OBSERVED_S with real margin:
+# the ceiling applies to LIVE holders too (see _is_stale), so a ceiling below the
+# longest legitimate run turns the scheduler into a second concurrent writer.
+# Was 2 h against a "~13 min" reingest -- an estimate that stopped being true once
+# the corpus reached 50k chunks, at which point the 2 h ceiling sat INSIDE the
+# 2h33m full embed. 6 h keeps ~2.4x headroom for corpus growth while still
+# reclaiming a genuinely wedged holder the same day.
+DEFAULT_STALE_AFTER_S = 6 * 60 * 60
 
 
 class LockHeld(RuntimeError):
