@@ -103,7 +103,7 @@ Register via `mcp.yaml` (validated against mcp-factory's `Manifest` loader). The
 
 ## Tests
 ```bash
-python -m pytest        # 110 passed
+python -m pytest        # 115 passed
 ```
 
 ## Layout
