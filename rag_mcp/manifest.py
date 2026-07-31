@@ -29,12 +29,18 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 MANIFEST_FILENAME = "ingest-manifest.json"
 
-# Bump when the on-disk shape changes; an unrecognized version is ignored
-# (treated as "no manifest") rather than mis-parsed.
+# Bump when the on-disk shape changes INCOMPATIBLY; an unrecognized version is
+# ignored (treated as "no manifest") rather than mis-parsed.
+#
+# Deliberately still 1 after the 2026-07-30 snapshot-dedupe change. That change
+# adds two OPTIONAL per-file keys (`kept`, `spanh`); a manifest written before it
+# simply lacks them and reads as "every chunk index is stored, no spans
+# recorded", which is exactly the old behavior. Bumping would have forced the
+# live 50k-chunk store through a ~2h43m full re-embed to gain nothing.
 MANIFEST_VERSION = 1
 
 
@@ -75,7 +81,20 @@ class RunIdentity:
 
 @dataclass
 class IngestManifest:
-    """Maps corpus-relative path -> (content hash, number of chunks stored)."""
+    """Maps corpus-relative path -> what is currently embedded for that file.
+
+    Per file: ``sha256`` (content hash), ``chunks`` (how many chunks the file
+    produces), and two OPTIONAL keys added for snapshot de-duplication:
+
+      * ``kept``  - the chunk indices actually embedded. Absent means "all of
+        them", which is the only thing that was ever true before dedupe existed.
+        This is the record of which ids are IN THE STORE, so pruning is a set
+        difference against it rather than a trailing-tail special case.
+      * ``spanh`` - fingerprint of the repeat-dates carried by this file's
+        surviving chunks. A survivor's span grows every day the repeat continues
+        even though the file itself never changes, and this is how an unchanged
+        file's metadata still gets refreshed exactly when it needs to be.
+    """
 
     identity: RunIdentity
     files: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -90,8 +109,48 @@ class IngestManifest:
         record = self.files.get(rel)
         return int(record.get("chunks", 0)) if record else 0
 
-    def record(self, rel: str, digest: str, chunks: int) -> None:
-        self.files[rel] = {"sha256": digest, "chunks": chunks}
+    def stored_indices(self, rel: str) -> tuple[int, ...]:
+        """Chunk indices believed to be in the store for *rel*.
+
+        Falls back to ``range(chunks)`` when ``kept`` is absent -- both for
+        pre-dedupe manifests and for ordinary (non-snapshot) files, where every
+        chunk is stored and writing the list out would just bloat the file.
+        """
+        record = self.files.get(rel)
+        if not record:
+            return ()
+        kept = record.get("kept")
+        if isinstance(kept, list):
+            return tuple(kept)
+        return tuple(range(self.chunk_count(rel)))
+
+    def stored_ids(self, rel: str) -> set[str]:
+        return {f"{rel}::{i}" for i in self.stored_indices(rel)}
+
+    def span_hash(self, rel: str) -> str:
+        record = self.files.get(rel)
+        if not record:
+            return ""
+        value = record.get("spanh")
+        return value if isinstance(value, str) else ""
+
+    def record(
+        self,
+        rel: str,
+        digest: str,
+        chunks: int,
+        kept: Sequence[int] | None = None,
+        span_hash: str = "",
+    ) -> None:
+        entry: dict[str, Any] = {"sha256": digest, "chunks": chunks}
+        # Only persist `kept` when it actually differs from "everything" -- the
+        # manifest covers ~2.8k files and an index list per file would triple it
+        # for no information.
+        if kept is not None and tuple(kept) != tuple(range(chunks)):
+            entry["kept"] = list(kept)
+        if span_hash:
+            entry["spanh"] = span_hash
+        self.files[rel] = entry
 
     # -- persistence -----------------------------------------------------
 
@@ -151,11 +210,23 @@ def load_manifest(store_dir: Path | str, identity: RunIdentity) -> IngestManifes
         return empty
     clean: dict[str, dict[str, Any]] = {}
     for rel, record in files.items():
-        if (
+        if not (
             isinstance(rel, str)
             and isinstance(record, dict)
             and isinstance(record.get("sha256"), str)
             and isinstance(record.get("chunks"), int)
         ):
-            clean[rel] = {"sha256": record["sha256"], "chunks": record["chunks"]}
+            continue
+        entry: dict[str, Any] = {"sha256": record["sha256"], "chunks": record["chunks"]}
+        # Optional, added 2026-07-30. Each is dropped independently if malformed:
+        # a bad `kept` degrades to "all chunks stored" (so pruning under-deletes
+        # rather than deleting live chunks), a bad `spanh` degrades to "" (so the
+        # metadata refresh fires once too often rather than never).
+        kept = record.get("kept")
+        if isinstance(kept, list) and all(isinstance(i, int) for i in kept):
+            entry["kept"] = list(kept)
+        spanh = record.get("spanh")
+        if isinstance(spanh, str):
+            entry["spanh"] = spanh
+        clean[rel] = entry
     return IngestManifest(identity=identity, files=clean)

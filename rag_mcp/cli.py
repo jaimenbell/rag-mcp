@@ -55,6 +55,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             # nothing to skip against; keep the flag honest rather than relying
             # on the manifest happening to be gone.
             incremental=not args.full and not args.clean,
+            dedupe_snapshots=not args.no_snapshot_dedupe,
         )
     finally:
         lock.release()
@@ -65,6 +66,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         "files_skipped": report.files_skipped,
         "chunks_added": report.chunks_added,
         "chunks_deleted": report.chunks_deleted,
+        "chunks_deduped": report.chunks_deduped,
         "incremental": report.incremental,
         "store_count": store.count(),
     }
@@ -129,6 +131,20 @@ def main(argv: list[str] | None = None) -> int:
             "the last run are not re-embedded, which is what makes frequent "
             "scheduling affordable. Use --full to force a rebuild in place "
             "(unlike --clean it does not delete the store first)."
+        ),
+    )
+    p_ing.add_argument(
+        "--no-snapshot-dedupe",
+        action="store_true",
+        help=(
+            "embed every chunk of every dated snapshot file, including ones "
+            "byte-identical to the previous day's. Dedupe is ON by default: "
+            "daily report series (fleet-health-YYYY-MM-DD and friends) repeat "
+            "unchanged status blocks verbatim, which crowds top-k with copies of "
+            "one line. The first occurrence is always kept and the collapsed "
+            "dates are recorded in each surviving chunk's metadata, so per-date "
+            "questions still answer. Turning this off re-embeds them on the next "
+            "run."
         ),
     )
     p_ing.add_argument(

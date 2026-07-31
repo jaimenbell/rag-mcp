@@ -99,14 +99,27 @@ def search_knowledge(
         score = None
         if isinstance(distance, (int, float)):
             score = round(max(0.0, 1.0 - float(distance)), 4)
+        citation: dict[str, Any] = {
+            "source": source,
+            "heading": meta.get("heading", "") or None,
+            "chunk_index": meta.get("chunk_index"),
+        }
+        # Snapshot-series chunks only. Ingest collapses a daily report block that
+        # is byte-identical to the previous day's, keeping the FIRST occurrence.
+        # These fields are what keeps that lossless for citation: the surviving
+        # chunk states its own date and the later dates it also stood for, so
+        # "what did this say on <date>" is still answerable. Absent for ordinary
+        # notes -- the citation shape does not change for them.
+        if meta.get("snapshot_date"):
+            citation["snapshot_date"] = meta["snapshot_date"]
+            repeat_dates = str(meta.get("repeat_dates") or "")
+            if repeat_dates:
+                citation["also_unchanged_on"] = repeat_dates
+                citation["snapshots_covered"] = meta.get("repeat_count")
         results.append(
             {
                 "text": hit.get("document", ""),
-                "citation": {
-                    "source": source,
-                    "heading": meta.get("heading", "") or None,
-                    "chunk_index": meta.get("chunk_index"),
-                },
+                "citation": citation,
                 "score": score,
             }
         )

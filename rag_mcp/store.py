@@ -204,6 +204,23 @@ class VectorStore:
             embeddings=embeddings,
         )
 
+    def update_metadatas(
+        self, *, ids: Sequence[str], metadatas: Sequence[dict]
+    ) -> None:
+        """Rewrite metadata for existing chunks WITHOUT re-embedding them.
+
+        Exists for snapshot de-duplication: a surviving chunk's ``repeat_dates``
+        grows every day the repeat continues, but its text is by definition
+        unchanged. Routing that through `.add()` would re-embed thousands of
+        chunks daily to record a fact the embedding does not encode.
+
+        Callers must only pass ids known to exist -- Chroma logs a warning and
+        silently ignores unknown ids rather than raising.
+        """
+        if not ids:
+            return
+        self._collection.update(ids=list(ids), metadatas=list(metadatas))
+
     def delete(self, *, ids: Sequence[str]) -> None:
         """Remove chunks by id. Used to prune stale chunks during incremental ingest.
 

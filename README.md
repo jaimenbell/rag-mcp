@@ -87,6 +87,29 @@ re-embedded, so an embedder swap can never be silently half-applied. A missing,
 corrupt, or mismatched manifest, or a manifest against an empty store, all degrade
 to a full rebuild; nothing degrades to a wrong skip.
 
+### Snapshot de-duplication
+The manifest's skip is a **whole-file** hash, so it cannot see the duplication that
+actually hurts retrieval: a daily snapshot series (`fleet-health-2026-07-23.md` and
+friends) repeats yesterday's paragraphs verbatim inside a file whose hash still
+changed. Measured on the live vault, one `## RED Bots` status line took **five
+distinct values across fifteen consecutive files** and crowded a top-10 with
+byte-identical copies of itself, burying the document that explained it at rank 16.
+
+Ingest therefore also de-duplicates at **chunk** level, but only within a dated
+series and only against the *immediately preceding* snapshot. The first occurrence
+is always embedded and keeps its own date as its `source`; later verbatim repeats
+are not embedded, and instead extend the survivor's `repeat_dates` metadata, which
+`search_knowledge` returns as `snapshot_date` / `also_unchanged_on` /
+`snapshots_covered`. So "what did this say on date X" is still answerable -- that is
+why the series is de-duplicated rather than excluded. A value that changes and later
+returns is kept, because it is a new fact rather than a repeat.
+
+Scope is narrow and stated with the rule in `rag_mcp/snapshots.py`: filename ending
+in `-YYYY-MM-DD`, at least 3 such files sharing a directory and stem, byte-identical
+under an identical heading. On the live corpus that is 316 of 2,814 files and
+collapses 842 of 50,428 chunks (17.5% of series chunks, 1.67% corpus-wide) while
+touching zero ordinary notes. Disable with `--no-snapshot-dedupe`.
+
 `--full` rebuilds in place (ignores the manifest, keeps the store); `--clean`
 deletes the store first. Both still WRITE a manifest, so the next run is cheap.
 `reingest-clean.bat` (weekly) remains a belt-and-braces reset.
@@ -97,7 +120,7 @@ Register via `mcp.yaml` (validated against mcp-factory's `Manifest` loader). The
 
 ## Tests
 ```bash
-python -m pytest        # 126 passed
+python -m pytest        # 149 passed
 ```
 
 ## Layout
