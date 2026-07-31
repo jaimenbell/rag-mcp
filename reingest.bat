@@ -42,13 +42,27 @@ REM shorter. reingest-clean.bat (weekly Sun 03:30) stays as the belt-and-braces
 REM full rebuild.
 REM ============================================================================
 
-set "REPO=%USERPROFILE%\projects\rag-mcp"
+REM REPO self-locates from THIS SCRIPT's own directory (%~dp0), which satisfies
+REM two constraints at once and is why neither earlier form was right:
+REM   - It is GENERIC. This is a public repo; a hardcoded personal path would
+REM     undo the 2026-07-22 public-scrub (see the local-corpus.txt note below).
+REM   - It is SCHEDULER-SAFE. %USERPROFILE% (introduced e268652, 2026-07-28) is
+REM     not guaranteed to resolve under a no-profile/S4U task context to what an
+REM     interactive shell sees; the script's own location always does.
+set "REPO=%~dp0"
+if "%REPO:~-1%"=="\" set "REPO=%REPO:~0,-1%"
+set "LOG=%REPO%\logs\reingest.log"
+
+REM The logs dir must exist BEFORE the guard below, or the guard's own FATAL
+REM echo goes into a nonexistent directory and is silently lost.
+if not exist "%REPO%\logs" mkdir "%REPO%\logs"
+
 REM Corpus path comes from an UNTRACKED local file so the public repo stays
 REM generic (2026-07-22: the public-scrub sanitized a hardcoded path here and
 REM the nightly ingest silently ran against a placeholder). Create it once:
 REM   echo C:\path\to\your\corpus> local-corpus.txt
 if not exist "%REPO%\local-corpus.txt" (
-  echo [%DATE% %TIME%] FATAL: local-corpus.txt missing -- see reingest.bat header>> "%REPO%\logs\reingest.log"
+  echo [%DATE% %TIME%] FATAL: local-corpus.txt missing -- see reingest.bat header ^(REPO=%REPO%, USERPROFILE=%USERPROFILE%^)>> "%LOG%"
   exit /b 1
 )
 set /p VAULT=<"%REPO%\local-corpus.txt"
@@ -56,12 +70,9 @@ REM CUTOVER 2026-07-02: bge-large-en-v1.5 store (1024-dim). Old MiniLM store
 REM kept at store.chroma for instant rollback (repoint STORE + EMBEDDER back).
 set "STORE=%REPO%\store-bge.chroma"
 set "PY=%REPO%\.venv\Scripts\python.exe"
-set "LOG=%REPO%\logs\reingest.log"
 
 set "RAG_MCP_COLLECTION=knowledge"
 set "RAG_MCP_EMBEDDER=bge"
-
-if not exist "%REPO%\logs" mkdir "%REPO%\logs"
 
 REM Rotate at ~5 MB so a 15-minute cadence cannot grow the log without bound.
 for %%A in ("%LOG%") do if %%~zA GTR 5000000 move /y "%LOG%" "%LOG%.1" >nul
@@ -70,6 +81,16 @@ REM One line per tick (--quiet) instead of a banner + 10-line pretty JSON: at
 REM every 15 minutes this runs ~96 times a day and the old format was unreadable.
 cd /d "%REPO%"
 "%PY%" -m rag_mcp.cli --embedder %RAG_MCP_EMBEDDER% ingest "%VAULT%" --db "%STORE%" --quiet >> "%LOG%" 2>&1
+REM Capture immediately, on its own line. Do NOT read %ERRORLEVEL% inside a
+REM parenthesized block -- it expands at parse time there and freezes.
+set "RC=%ERRORLEVEL%"
+
 REM exit 3 == another run holds the lock (e.g. the weekly clean rebuild). At this
-REM cadence that is a normal no-op, not an error worth alerting on.
-if errorlevel 1 echo [%DATE% %TIME%] rag-mcp incremental re-ingest exited nonzero>> "%LOG%"
+REM cadence that is a normal no-op, not an error worth alerting on, so it is
+REM mapped to success rather than surfaced to the scheduler as a red run.
+REM Every other nonzero code now PROPAGATES: before 2026-07-31 the tail was a
+REM bare conditional echo with no exit /b, so this script reported exit 0 even
+REM when the ingest genuinely failed.
+if "%RC%"=="3" exit /b 0
+if not "%RC%"=="0" echo [%DATE% %TIME%] rag-mcp incremental re-ingest exited nonzero (exit %RC%)>> "%LOG%"
+exit /b %RC%
