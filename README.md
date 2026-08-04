@@ -139,5 +139,11 @@ run_server.py   operational MCP entrypoint (referenced by mcp.yaml)
 mcp.yaml        manifest (mcp-factory model)
 ```
 
+## Commercial support
+
+Maintained by [Jaimen Bell](https://jaimenbell.dev). For production MCP
+integrations, custom servers, or agent-reliability work, see
+[jaimenbell.dev](https://jaimenbell.dev).
+
 <!-- MCP registry ownership marker -->
 mcp-name: io.github.jaimenbell/rag-mcp
