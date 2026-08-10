@@ -13,6 +13,10 @@ build/
 *.chroma/
 chroma_store/
 *.sqlite3
+*.chroma.lock
+
+# Stray Windows redirect artifacts (>nul misinterpreted under a POSIX shell)
+nul
 
 # Re-ingest routine logs (runtime output)
 logs/
