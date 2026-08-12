@@ -145,5 +145,8 @@ Maintained by [Jaimen Bell](https://jaimenbell.dev). For production MCP
 integrations, custom servers, or agent-reliability work, see
 [jaimenbell.dev](https://jaimenbell.dev).
 
+Building your own MCP server? The [MCP Starter Kit](https://jaimenbell.gumroad.com/l/adnojp)
+has templates, a build playbook, and packaging war-stories from shipping this one.
+
 <!-- MCP registry ownership marker -->
 mcp-name: io.github.jaimenbell/rag-mcp
