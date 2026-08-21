@@ -260,3 +260,42 @@ class VectorStore:
     def all_metadatas(self) -> list[dict]:
         res = self._collection.get(include=["metadatas"])
         return list(res.get("metadatas") or [])
+
+    def close(self) -> None:
+        """Release this process's OS handles on the on-disk store.
+
+        WHY THIS EXISTS (root-caused 2026-08-21). A Chroma ``PersistentClient``
+        keeps the collection's HNSW segment files -- notably ``data_level0.bin``
+        -- open for the life of the client. On Windows an open handle makes the
+        containing directory both un-deletable AND un-renameable (measured:
+        ``shutil.rmtree`` -> ``PermissionError WinError 32``; ``os.rename`` ->
+        ``WinError 5``). So a long-lived reader, such as the MCP server, silently
+        blocks the weekly ``--clean`` rebuild from a DIFFERENT process, which is
+        exactly how the 2026-08-16 rebuild died. The cross-process
+        ``ReingestLock`` cannot help: it coordinates the two ingest paths with
+        each other and the reader never participates in it.
+
+        Deleting the collection through Chroma's own API instead of unlinking
+        files was measured to work while a handle is held -- and was REJECTED:
+        ``self._collection`` is bound once in ``__init__``, so every already-open
+        VectorStore would keep a handle to a destroyed collection and fail every
+        later query. That trades a loud, self-healing rebuild failure for a
+        silent permanent one.
+
+        Uses Chroma's private ``_system.stop()`` plus the shared-client cache
+        clear, because 1.x exposes no public close. Both were measured to
+        actually release the handle (the test guards this -- if a future Chroma
+        drops these, the guard fails loudly rather than the server quietly
+        holding the store forever). Idempotent and never raises: a store that
+        cannot be closed must not take the server down with it.
+        """
+        try:
+            self._client._system.stop()
+        except Exception:  # noqa: BLE001 - private API, best-effort by design
+            pass
+        try:
+            from chromadb.api.shared_system_client import SharedSystemClient
+
+            SharedSystemClient.clear_system_cache()
+        except Exception:  # noqa: BLE001 - ditto
+            pass

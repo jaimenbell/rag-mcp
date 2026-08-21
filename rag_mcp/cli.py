@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 from .ingest import EXCLUDE_PREFIXES, ingest
@@ -25,6 +26,68 @@ def _embedder(name: str):
     return DefaultEmbedder()
 
 
+# How long --clean will wait for other processes to let go of the store before
+# giving up. Must comfortably exceed rag_mcp.server._WATCH_INTERVAL_S (1 s), the
+# period at which a running MCP server notices the lock and drops its handle;
+# the generous margin covers a server that is mid-query when the lock is taken.
+CLEAN_HANDLE_WAIT_S = 120.0
+_CLEAN_POLL_S = 2.0
+
+
+def _rmtree_waiting_for_readers(db_path: Path) -> None:
+    """Delete the store dir, waiting out other processes' open handles.
+
+    ROOT CAUSE (2026-08-16 rebuild failure, root-caused 2026-08-21). A Chroma
+    PersistentClient holds the collection's HNSW segment files open for the life
+    of the client. On Windows that makes the store dir un-deletable
+    (PermissionError WinError 32 on data_level0.bin) AND un-renameable
+    (WinError 5), so there is no way to sidestep the handle -- the holder must
+    actually let go. The long-lived MCP server is such a holder, and it never
+    participates in ReingestLock, which only coordinates the two ingest paths
+    with each other.
+
+    The other half of this handshake lives in rag_mcp.server: a watcher thread
+    sees the lock WE already hold and releases the server's store, and
+    _ensure_store refuses to re-open while the lock is live. So by the time we
+    are here the holder is already being told to let go; this loop just waits
+    for it. We hold the lock throughout, so no new ingest can start meanwhile.
+
+    Raises the original PermissionError if the wait expires, after naming what
+    is likely holding it -- a bare traceback here previously told the operator
+    nothing about which process to look at.
+    """
+    deadline = time.monotonic() + CLEAN_HANDLE_WAIT_S
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            shutil.rmtree(db_path)
+            if attempt > 1:
+                waited = CLEAN_HANDLE_WAIT_S - (deadline - time.monotonic())
+                print(
+                    f"[rag-mcp] --clean: removed store {db_path} "
+                    f"after waiting {waited:.0f}s for {attempt - 1} blocked attempt(s)",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"[rag-mcp] --clean: removed store {db_path}", file=sys.stderr)
+            return
+        except PermissionError as exc:
+            if time.monotonic() >= deadline:
+                print(
+                    f"[rag-mcp] --clean: FAILED to remove {db_path} after "
+                    f"{CLEAN_HANDLE_WAIT_S:.0f}s -- another process still holds "
+                    f"{getattr(exc, 'filename', 'a file in the store')} open. "
+                    "The usual holder is a long-running rag-mcp MCP server "
+                    "(run_server.py); it should release automatically, so a "
+                    "server predating this fix, or an unrelated reader, is the "
+                    "likely cause.",
+                    file=sys.stderr,
+                )
+                raise
+            time.sleep(_CLEAN_POLL_S)
+
+
 def _cmd_ingest(args: argparse.Namespace) -> int:
     db_path = Path(args.db).resolve()
     # Cross-process mutex: both the daily upsert and the weekly --clean rebuild
@@ -38,8 +101,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         return 3
     try:
         if args.clean and db_path.exists():
-            shutil.rmtree(db_path)
-            print(f"[rag-mcp] --clean: removed store {db_path}", file=sys.stderr)
+            _rmtree_waiting_for_readers(db_path)
         store = VectorStore(
             path=str(db_path),
             collection_name=args.collection,

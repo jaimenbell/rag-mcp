@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from typing import Any
 
 import anyio
@@ -22,10 +23,30 @@ from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
+from .lock import live_holder
 from .search import MAX_K, search_knowledge
 
 # Lazily-opened store/root so importing the module never touches the model or disk.
-_STATE: dict[str, Any] = {"store": None, "root": None}
+_STATE: dict[str, Any] = {"store": None, "root": None, "db_path": None}
+
+# Guards _STATE against the reindex watcher thread racing a tool call. The store
+# is opened and closed from two threads now, so "check then use" is no longer
+# safe without it.
+_LOCK = threading.Lock()
+
+# How often the watcher asks "is a reingest running?". The reingest's own retry
+# window (rag_mcp.cli) must comfortably exceed this -- that pairing is what makes
+# the handshake work, and both sides say so.
+_WATCH_INTERVAL_S = 1.0
+
+
+class ReindexInProgress(RuntimeError):
+    """A --clean rebuild currently owns the store, so there is nothing to read.
+
+    Distinct from a config error on purpose: this is transient and self-healing,
+    and reporting it as a config failure would send a reader off debugging their
+    environment during what is really a scheduled maintenance window.
+    """
 
 _TOOL = types.Tool(
     name="search_knowledge",
@@ -55,21 +76,115 @@ _TOOL = types.Tool(
 )
 
 
-def _ensure_store():
-    if _STATE["store"] is None:
-        # Imported lazily so a missing/invalid config surfaces as a structured
-        # error from call_tool rather than an import-time crash.
-        from .config import Config
+def _release_store() -> bool:
+    """Drop this process's handle on the store. Returns True if one was held.
 
-        cfg = Config.from_env()
-        _STATE["store"] = cfg.open_store()
-        _STATE["root"] = cfg.corpus_root
-    return _STATE["store"], _STATE["root"]
+    Clearing _STATE BEFORE closing is deliberate: a concurrent tool call must
+    never be handed a store that is mid-close.
+    """
+    with _LOCK:
+        store = _STATE["store"]
+        _STATE["store"] = None
+    if store is None:
+        return False
+    try:
+        store.close()
+    except Exception:  # noqa: BLE001 - releasing must never take the server down
+        pass
+    return True
+
+
+def _reindex_running(db_path) -> bool:
+    """True while a live reingest owns the store (rag_mcp.lock.ReingestLock).
+
+    Reuses live_holder rather than re-deriving liveness, so this can never
+    disagree with what the lock itself considers a live holder -- a second,
+    drifting definition of "running" is how this kind of check starts lying.
+    """
+    try:
+        return db_path is not None and live_holder(db_path) is not None
+    except Exception:  # noqa: BLE001 - an unreadable lock must not stop reads
+        return False
+
+
+def _ensure_store():
+    with _LOCK:
+        if _STATE["store"] is not None:
+            return _STATE["store"], _STATE["root"]
+
+    # Imported lazily so a missing/invalid config surfaces as a structured
+    # error from call_tool rather than an import-time crash.
+    from .config import Config
+
+    cfg = Config.from_env()
+    with _LOCK:
+        _STATE["db_path"] = cfg.db_path
+
+    # Do NOT re-open mid-rebuild. Without this the watcher would drop the handle
+    # and the very next search would immediately grab a new one, re-blocking the
+    # rmtree the release just unblocked.
+    if _reindex_running(cfg.db_path):
+        raise ReindexInProgress(
+            f"a --clean rebuild is currently rewriting the store at {cfg.db_path}; "
+            "search is unavailable until it finishes"
+        )
+
+    store = cfg.open_store()
+    with _LOCK:
+        if _STATE["store"] is None:
+            _STATE["store"] = store
+            _STATE["root"] = cfg.corpus_root
+            return store, cfg.corpus_root
+        existing, root = _STATE["store"], _STATE["root"]
+    # Lost the open race with another thread -- close OUR duplicate, or it would
+    # keep a handle nothing references and re-block the next rebuild.
+    try:
+        store.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return existing, root
+
+
+def _watch_for_reindex(stop=None) -> None:
+    """Release the store whenever a reingest takes the lock; poll forever.
+
+    A request-driven check is NOT sufficient, and that is the whole reason this
+    thread exists: the weekly rebuild fires at 03:30 Sunday, when the server is
+    typically idle, so a server that only re-checked on each tool call would
+    hold its handle straight through the rebuild and block it -- the exact
+    2026-08-16 failure.
+    """
+    stop = stop if stop is not None else threading.Event()
+    while not stop.wait(_WATCH_INTERVAL_S):
+        try:
+            db_path = _STATE.get("db_path")
+            if db_path is None:
+                from .config import Config
+
+                try:
+                    db_path = Config.from_env().db_path
+                except Exception:  # noqa: BLE001 - config absent; retry next tick
+                    continue
+                with _LOCK:
+                    _STATE["db_path"] = db_path
+            if _reindex_running(db_path):
+                _release_store()
+        except Exception:  # noqa: BLE001 - a watcher that dies is worse than one that retries
+            continue
 
 
 def _run_search(arguments: dict[str, Any]) -> dict[str, Any]:
     try:
         store, root = _ensure_store()
+    except ReindexInProgress as exc:
+        # Transient and self-healing -- deliberately NOT reported as a config
+        # error, which would send the caller debugging their environment during
+        # a scheduled rebuild.
+        return {
+            "ok": False,
+            "error": {"type": "reindex_in_progress", "message": str(exc)},
+            "results": [],
+        }
     except Exception as exc:  # noqa: BLE001 - config/init failure -> structured error
         return {
             "ok": False,
@@ -140,6 +255,11 @@ async def _main() -> None:
     # Warm before the stdio transport (and its worker threads) exist, so the
     # first-time numpy/chromadb import can never race a blocked stdin.readline().
     await anyio.to_thread.run_sync(_warm)
+    # Daemon so it never keeps the interpreter alive at shutdown. Started AFTER
+    # warm so db_path is already resolved on the first tick in the common case.
+    threading.Thread(
+        target=_watch_for_reindex, name="rag-mcp-reindex-watch", daemon=True
+    ).start()
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
