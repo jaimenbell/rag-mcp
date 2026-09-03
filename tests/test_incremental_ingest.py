@@ -14,7 +14,15 @@ import json
 
 import pytest
 
-from rag_mcp.ingest import ingest
+from rag_mcp.ingest import (
+    CURRENT_METADATA_VERSION,
+    DEFAULT_HANDOFF_MIRROR_BASENAMES,
+    DEFAULT_HANDOFF_MIRROR_DIR,
+    DEFAULT_HANDOFF_MIRROR_STEMS,
+    _classifier_config_fingerprint,
+    _effective_metadata_version,
+    ingest,
+)
 from rag_mcp.manifest import (
     MANIFEST_FILENAME,
     IngestManifest,
@@ -23,6 +31,13 @@ from rag_mcp.manifest import (
     load_manifest,
 )
 from rag_mcp.store import HashEmbedder, VectorStore
+
+# Expected metav for a default-config ingest() call -- the metadata backfill
+# tests compare against this instead of the bare CURRENT_METADATA_VERSION
+# now that metav also folds in the classifier config fingerprint (finding #2).
+_DEFAULT_METAV = _effective_metadata_version(
+    DEFAULT_HANDOFF_MIRROR_DIR, DEFAULT_HANDOFF_MIRROR_BASENAMES
+)
 
 
 class CountingEmbedder(HashEmbedder):
@@ -388,13 +403,20 @@ class TestMetadataBackfill:
             "entire incremental path"
         )
         assert report.chunks_added == 0
+        assert report.chunks_metadata_refreshed == len(ids), (
+            "chunks_metadata_refreshed must count the backfill so an operator "
+            "can see one happened from the run summary alone"
+        )
+        assert report.chunks_metadata_missing == 0, (
+            "SILENT control: a fully-synced store must report zero missing"
+        )
         assert all(m["doc_class"] == "note" for m in store.all_metadatas()), (
             "doc_class was not backfilled onto already-embedded chunks"
         )
 
         raw_after = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert all(
-            rec.get("metav") == 1 for rec in raw_after["files"].values()
+            rec.get("metav") == _DEFAULT_METAV for rec in raw_after["files"].values()
         ), "manifest must record the new metadata version after a backfill"
 
     def test_current_metadata_version_triggers_zero_updates(
@@ -416,3 +438,268 @@ class TestMetadataBackfill:
 
         assert calls == [], "already-current metadata must not be re-written"
         assert report.files_unchanged == 2
+        assert report.chunks_metadata_refreshed == 0, (
+            "SILENT control: nothing changed, so the counter must read zero"
+        )
+
+    def test_desynced_id_missing_from_store_rolls_back_metav_and_is_counted(
+        self, corpus_dir, tmp_path
+    ):
+        # Finding #12: update_metadatas() silently ignores an id the store
+        # doesn't have (Chroma warns, doesn't raise). Simulate a manifest/
+        # store desync -- the manifest still claims dogs.md::0 is stored, but
+        # it isn't (e.g. an out-of-band delete, or a crash between a prior
+        # add() and manifest.save()) -- and prove the fix does NOT silently
+        # stamp that file current.
+        store = _store(tmp_path)
+        ingest(corpus_dir, store)  # writes metav=CURRENT_METADATA_VERSION
+
+        manifest_path = tmp_path / "inc.chroma" / MANIFEST_FILENAME
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+        raw["files"]["dogs.md"].pop("metav", None)  # force meta_stale for dogs.md only
+        manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        store.delete(ids=["dogs.md::0"])  # the desync: manifest still believes it's there
+
+        report = ingest(corpus_dir, store)
+
+        assert report.chunks_metadata_missing >= 1, (
+            "the missing id must be counted, not silently absorbed"
+        )
+        raw_after = json.loads(manifest_path.read_text(encoding="utf-8"))
+        dogs_metav = raw_after["files"]["dogs.md"].get("metav")
+        assert dogs_metav != _DEFAULT_METAV, (
+            "a file whose refresh could not be verified present must NOT be "
+            "stamped current -- the next incremental run must retry it, not "
+            "trust a permanently-missing doc_class behind an exit-0 run"
+        )
+        # SILENT half in the same test: cats.md was never touched, so its
+        # refresh (if any) fully lands and its metav DOES get stamped.
+        cats_metav = raw_after["files"]["cats.md"].get("metav")
+        assert cats_metav == _DEFAULT_METAV
+
+    def test_missing_chunk_is_re_added_not_stranded_forever(self, corpus_dir, tmp_path):
+        # Finding #1 (RM-fixafter3): the finding-#12 rollback above only pops
+        # `metav`, which forces meta_stale again -- but leaves the manifest's
+        # `kept`/`chunks` bookkeeping still claiming the missing id is stored.
+        # `prev_ids` is built from that bookkeeping, so `to_add` never
+        # includes the missing chunk and every subsequent run repeats the
+        # same no-op metadata-refresh attempt forever: dogs.md::0 never
+        # reappears and chunks_metadata_missing never returns to 0.
+        #
+        # FIRES: dogs.md::0 deleted out-of-band + meta_stale forced -> ONE
+        #        more incremental run re-embeds it and it exists again.
+        # SILENT: a fully in-sync store needs zero re-adds on a repeat run
+        #        (already proven by TestSkipsUnchangedFiles above).
+        store = _store(tmp_path)
+        ingest(corpus_dir, store)  # writes metav=CURRENT_METADATA_VERSION
+
+        manifest_path = tmp_path / "inc.chroma" / MANIFEST_FILENAME
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+        raw["files"]["dogs.md"].pop("metav", None)  # force meta_stale for dogs.md only
+        manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        store.delete(ids=["dogs.md::0"])  # out-of-band desync
+
+        report1 = ingest(corpus_dir, store)  # detects the gap
+        assert report1.chunks_metadata_missing >= 1
+        assert store.existing_ids(["dogs.md::0"]) == set(), (
+            "sanity: the chunk is genuinely absent after run 1"
+        )
+
+        report2 = ingest(corpus_dir, store)  # must re-embed the missing chunk
+        assert report2.chunks_added >= 1, (
+            "the missing chunk must be re-added on a subsequent run instead "
+            "of being stranded behind an infinite no-op metadata-refresh retry"
+        )
+        assert store.existing_ids(["dogs.md::0"]) == {"dogs.md::0"}, (
+            "dogs.md::0 must be back in the store"
+        )
+        assert report2.chunks_metadata_missing == 0, (
+            "once genuinely re-added, this run has nothing left to report missing"
+        )
+
+        raw_final = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert raw_final["files"]["dogs.md"].get("metav") == _DEFAULT_METAV, (
+            "once genuinely re-added, the file's metav must be stamped current again"
+        )
+
+
+class TestClassifierConfigMetavFingerprint:
+    """RM-fixafter2 slice 5, finding #2 -- meta_stale keyed only off
+    CURRENT_METADATA_VERSION means changing handoff_mirror_dir/
+    handoff_mirror_basenames against an already-embedded store is a silent
+    no-op: doc_class in the store stays whatever the OLD config produced
+    until an operator remembers to --full/--clean rebuild. Folding a
+    fingerprint of the classifier config into the per-file metav makes a
+    config change itself a metadata-stale trigger.
+
+    FIRES: run 1 (default config) -> "note"; run 2, same store, with
+           handoff_mirror_dir="sessions" -> "handoff", with NO re-embed.
+    SILENT: same config run twice -> zero update_metadatas calls.
+    """
+
+    def test_config_change_triggers_metadata_only_backfill(self, tmp_path):
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        (sessions / "handoff.md").write_text(
+            "No frontmatter. Default config (dir='context') says 'note'.\n",
+            encoding="utf-8",
+        )
+        embedder = CountingEmbedder()
+        store = _store(tmp_path, embedder)
+
+        ingest(tmp_path, store)  # default handoff_mirror_dir="context"
+        metas = {m["source"]: m["doc_class"] for m in store.all_metadatas()}
+        assert metas["sessions/handoff.md"] == "note"
+
+        embedder.texts_embedded = 0
+        report = ingest(tmp_path, store, handoff_mirror_dir="sessions")
+
+        assert embedder.texts_embedded == 0, (
+            "a classifier config change must backfill via metadata refresh, "
+            "never a re-embed"
+        )
+        assert report.chunks_metadata_refreshed > 0
+        metas_after = {m["source"]: m["doc_class"] for m in store.all_metadatas()}
+        assert metas_after["sessions/handoff.md"] == "handoff"
+
+    def test_unchanged_config_triggers_zero_refresh(self, tmp_path, monkeypatch):
+        ctx = tmp_path / "context"
+        ctx.mkdir()
+        (ctx / "handoff.md").write_text("No frontmatter.\n", encoding="utf-8")
+        store = _store(tmp_path)
+        ingest(tmp_path, store)
+
+        calls: list[int] = []
+        original = store.update_metadatas
+
+        def spy(*, ids, metadatas):
+            calls.append(len(ids))
+            return original(ids=ids, metadatas=metadatas)
+
+        monkeypatch.setattr(store, "update_metadatas", spy)
+
+        report = ingest(tmp_path, store)  # identical config, identical content
+
+        assert calls == [], "SILENT control: unchanged config must not re-write metadata"
+        assert report.chunks_metadata_refreshed == 0
+
+
+class TestGrammarConstantsFoldedIntoFingerprint:
+    """RM-fixafter3, finding #3 -- the fingerprint hashed only
+    handoff_mirror_dir/handoff_mirror_basenames; a GRAMMAR edit (the stems
+    tuple, the leading-stem regex skeleton, or MARKDOWN_EXTS) was a silent
+    no-op on a populated store. _classifier_config_fingerprint now also
+    hashes the fully-built leading-stem regex PATTERN STRING for the
+    effective handoff_mirror_stems -- that one string already embeds the
+    stems tuple, the date-prefix/separator skeleton, AND the extension
+    alternation, so an edit to any of the three changes the fingerprint.
+
+    FIRES (runtime, ingest()-level): run 1 (default stems) -> "handoff" for
+        a file only "active" catches; run 2, same store, narrower
+        handoff_mirror_stems -> reclassified via metadata-only refresh, NO
+        re-embed.
+    FIRES (source-edit simulation, unit-level): a monkeypatched
+        _HANDOFF_LEADING_RE (standing in for a future grammar edit shipped
+        in this module) changes the fingerprint.
+    SILENT: same stems run twice -> zero update_metadatas calls; same
+        fingerprint inputs called twice -> identical fingerprint.
+    """
+
+    def test_stems_change_triggers_metadata_only_backfill(self, tmp_path):
+        ctx = tmp_path / "context"
+        ctx.mkdir()
+        (ctx / "active-clients-2026.md").write_text(
+            "Not a session mirror -- an ordinary business file.\n", encoding="utf-8"
+        )
+        embedder = CountingEmbedder()
+        store = _store(tmp_path, embedder)
+
+        ingest(tmp_path, store)  # default stems -> "handoff"
+        metas = {m["source"]: m["doc_class"] for m in store.all_metadatas()}
+        assert metas["context/active-clients-2026.md"] == "handoff"
+
+        embedder.texts_embedded = 0
+        report = ingest(tmp_path, store, handoff_mirror_stems=("handoff",))
+
+        assert embedder.texts_embedded == 0, (
+            "a grammar (stems) change must backfill via metadata refresh, "
+            "never a re-embed"
+        )
+        assert report.chunks_metadata_refreshed > 0
+        metas_after = {m["source"]: m["doc_class"] for m in store.all_metadatas()}
+        assert metas_after["context/active-clients-2026.md"] == "note"
+
+    def test_unchanged_stems_triggers_zero_refresh(self, tmp_path, monkeypatch):
+        ctx = tmp_path / "context"
+        ctx.mkdir()
+        (ctx / "active-clients-2026.md").write_text(
+            "Not a session mirror.\n", encoding="utf-8"
+        )
+        store = _store(tmp_path)
+        ingest(tmp_path, store)
+
+        calls: list[int] = []
+        original = store.update_metadatas
+
+        def spy(*, ids, metadatas):
+            calls.append(len(ids))
+            return original(ids=ids, metadatas=metadatas)
+
+        monkeypatch.setattr(store, "update_metadatas", spy)
+
+        report = ingest(tmp_path, store)  # identical config, identical content
+
+        assert calls == [], "SILENT control: unchanged stems must not re-write metadata"
+        assert report.chunks_metadata_refreshed == 0
+
+    def test_fingerprint_differs_for_narrowed_stems(self):
+        default_fp = _classifier_config_fingerprint(
+            DEFAULT_HANDOFF_MIRROR_DIR, DEFAULT_HANDOFF_MIRROR_BASENAMES, DEFAULT_HANDOFF_MIRROR_STEMS
+        )
+        narrowed_fp = _classifier_config_fingerprint(
+            DEFAULT_HANDOFF_MIRROR_DIR, DEFAULT_HANDOFF_MIRROR_BASENAMES, ("handoff",)
+        )
+        assert narrowed_fp != default_fp
+
+    def test_fingerprint_identical_for_same_stems_called_twice(self):
+        # SILENT control for the unit-level check above.
+        a = _classifier_config_fingerprint(
+            DEFAULT_HANDOFF_MIRROR_DIR, DEFAULT_HANDOFF_MIRROR_BASENAMES, DEFAULT_HANDOFF_MIRROR_STEMS
+        )
+        b = _classifier_config_fingerprint(
+            DEFAULT_HANDOFF_MIRROR_DIR, DEFAULT_HANDOFF_MIRROR_BASENAMES, DEFAULT_HANDOFF_MIRROR_STEMS
+        )
+        assert a == b
+
+    def test_fingerprint_changes_if_leading_regex_pattern_edited(self, monkeypatch):
+        # Ties the fingerprint to _HANDOFF_LEADING_RE's actual pattern text
+        # (which embeds stems, the date-prefix/separator skeleton, AND
+        # MARKDOWN_EXTS all in one string) -- simulates a future grammar
+        # edit shipped directly in the module (not via the stems parameter)
+        # to prove it can't land as a silent no-op on a populated store.
+        import re as re_module
+
+        from rag_mcp import ingest as ingest_mod
+
+        base = _classifier_config_fingerprint(
+            DEFAULT_HANDOFF_MIRROR_DIR, DEFAULT_HANDOFF_MIRROR_BASENAMES
+        )
+        monkeypatch.setattr(
+            ingest_mod,
+            "_HANDOFF_LEADING_RE",
+            re_module.compile(
+                r"^(?:handoff|active|resume)(?:[-_.].*)?(?:\.md|\.markdown|\.mdx)$",
+                re_module.IGNORECASE,
+            ),
+        )
+        changed = _classifier_config_fingerprint(
+            DEFAULT_HANDOFF_MIRROR_DIR, DEFAULT_HANDOFF_MIRROR_BASENAMES
+        )
+        assert changed != base, (
+            "a grammar edit to the leading-stem regex pattern (stems, date "
+            "prefix, separator class, or extension alternation) must change "
+            "the fingerprint, or a populated store silently keeps stale "
+            "doc_class forever after the edit ships"
+        )

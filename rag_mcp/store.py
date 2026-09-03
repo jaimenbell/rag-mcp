@@ -231,6 +231,26 @@ class VectorStore:
                 metadatas=metadatas[start : start + step],
             )
 
+    def existing_ids(self, ids: Sequence[str]) -> set[str]:
+        """Return the subset of *ids* actually present in the store.
+
+        Chroma's own `collection.update()` (see `update_metadatas`) silently
+        ignores unknown ids -- warns, does not raise -- so a caller that must
+        know whether a batched metadata rewrite actually landed everywhere
+        cannot infer success from the absence of an exception; it has to ask.
+        Batched at the same max-batch-size as `update_metadatas` for the same
+        reason (Chroma refuses an oversized `.get()` too).
+        """
+        if not ids:
+            return set()
+        ids = list(ids)
+        step = self._max_batch_size()
+        found: set[str] = set()
+        for start in range(0, len(ids), step):
+            res = self._collection.get(ids=ids[start : start + step], include=[])
+            found.update(res.get("ids") or [])
+        return found
+
     _FALLBACK_MAX_BATCH = 5000
 
     def _max_batch_size(self) -> int:

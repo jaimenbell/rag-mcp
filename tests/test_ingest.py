@@ -295,20 +295,43 @@ def test_ingest_custom_handoff_mirror_basenames_replaces_at_this_layer(tmp_path,
     # ingest()'s own param REPLACES, exactly like exclude_prefixes= does --
     # AUGMENT-the-defaults is a CLI-layer behavior (see test_cli.py's
     # --handoff-mirror-basename tests), not something ingest() does itself.
+    #
+    # RM-fixafter2 slice 2 note: "RESUME.md" is no longer a usable negative
+    # fixture here. Overriding handoff_mirror_basenames REPLACES the
+    # basename SET, but "resume" is now also a leading-stem regex match
+    # (see _HANDOFF_LEADING_RE) independent of that set -- the two signals
+    # are OR'd, so a bare stem name can't be un-matched by the basenames
+    # override alone. "custom-status.md" (not a stem word at all) is the
+    # fixture that actually exercises the override/replace semantic.
     ctx = tmp_path / "context"
     ctx.mkdir()
     (ctx / "status.md").write_text(
         "No frontmatter, custom basename, no 'handoff' substring either.\n",
         encoding="utf-8",
     )
-    (ctx / "RESUME.md").write_text(
-        "A default mirror name -- must NOT match once basenames is replaced.\n",
+    (ctx / "custom-status.md").write_text(
+        "Not a default basename and not a stem word -- must stay 'note' once "
+        "the basename set is replaced without it.\n",
         encoding="utf-8",
     )
     ingest(tmp_path, store, handoff_mirror_basenames={"status.md"})
     metas = {m["source"]: m["doc_class"] for m in store.all_metadatas()}
     assert metas["context/status.md"] == "handoff"
-    assert metas["context/RESUME.md"] == "note"
+    assert metas["context/custom-status.md"] == "note"
+
+
+def test_ingest_bare_stem_basename_matches_via_regex_even_when_basenames_overridden(
+    tmp_path, store
+):
+    # Documents the interaction above from the other direction: "RESUME.md"
+    # keeps classifying "handoff" purely via the leading-stem regex, even
+    # though it is no longer present in the (fully replaced) basenames set.
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "RESUME.md").write_text("A bare stem basename.\n", encoding="utf-8")
+    ingest(tmp_path, store, handoff_mirror_basenames={"status.md"})
+    metas = {m["source"]: m["doc_class"] for m in store.all_metadatas()}
+    assert metas["context/RESUME.md"] == "handoff"
 
 
 # ---------------------------------------------------------------------------
@@ -330,11 +353,17 @@ def test_doc_class_dir_comparison_is_case_insensitive(tmp_path, store):
     assert all(m["doc_class"] == "handoff" for m in metas)
 
 
-def test_doc_class_handoff_substring_title_is_note_not_handoff(tmp_path, store):
-    # FIRES the anti-false-positive: a spec doc ABOUT the handoff skill, not a
-    # session handoff record. Free text after "handoff-" fits none of the
-    # anchor's allowed suffix shapes (digit-led, <=3-char code, -vN, or a
-    # trailing date), so this must stay "note".
+def test_doc_class_handoff_leading_token_free_trailing_text_is_handoff(tmp_path, store):
+    # RM-fixafter2 slice 2 grammar change: the leading-stem match no longer
+    # constrains what follows the separator to a narrow shape (digit-led,
+    # <=3-char code, -vN, trailing date) -- ANY text after "handoff-"/"-_ "
+    # now qualifies, because the narrow-shape design was itself the source of
+    # the false NEGATIVES this fix-after exists to close (see
+    # test_doc_class_handoff_leading_stem_free_text_variants below). This
+    # widens the net back over titles like "handoff-skill-redesign-spec.md"
+    # -- accepted: doc_class is a convenience filter scoped to `context/`,
+    # not a security boundary, and simple-and-correct-on-the-real-corpus beats
+    # a narrow shape-language that still missed real mirrors.
     ctx = tmp_path / "context"
     ctx.mkdir()
     (ctx / "handoff-skill-redesign-spec.md").write_text(
@@ -347,34 +376,57 @@ def test_doc_class_handoff_substring_title_is_note_not_handoff(tmp_path, store):
         if m["source"] == "context/handoff-skill-redesign-spec.md"
     ]
     assert metas
-    assert all(m["doc_class"] == "note" for m in metas)
+    assert all(m["doc_class"] == "handoff" for m in metas)
 
 
 def test_doc_class_handoff_versioned_mirror_name_is_handoff(tmp_path, store):
-    # A real dated/versioned per-thread handoff mirror: the "-alphahive-
-    # world-v5" suffix ends in a version tag, one of the anchor's allowed
-    # shapes -- must still match.
+    # A real dated/versioned per-thread handoff mirror -- must still match
+    # under the new leading-stem-only grammar (first token is "handoff").
     ctx = tmp_path / "context"
     ctx.mkdir()
-    (ctx / "handoff-alphahive-world-v5.md").write_text(
+    (ctx / "handoff-projectx-world-v5.md").write_text(
         "No frontmatter. Per-thread session handoff bookkeeping content.\n",
         encoding="utf-8",
     )
     ingest(tmp_path, store)
     metas = [
         m for m in store.all_metadatas()
-        if m["source"] == "context/handoff-alphahive-world-v5.md"
+        if m["source"] == "context/handoff-projectx-world-v5.md"
     ]
     assert metas
     assert all(m["doc_class"] == "handoff" for m in metas)
 
 
-def test_doc_class_trailing_handoff_token_is_handoff(tmp_path, store):
-    # Trailing-word form: the token is the LAST word before .md, not the first.
+def test_doc_class_handoff_digit_led_trailing_text_is_handoff(tmp_path, store):
+    # Finding #5 control: the old `_HANDOFF_TOKEN_SUFFIX` had an "unbounded"
+    # bug where a digit-led suffix let anything through -- subsumed by the
+    # slice-2 grammar rewrite (leading-stem match accepts any trailing text
+    # by design now, see the test above), so this is simply the same
+    # behavior for a different trailing shape, not a special case anymore.
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "handoff-3d-printing-guide.md").write_text(
+        "No frontmatter. Unrelated content about 3D printing.\n",
+        encoding="utf-8",
+    )
+    ingest(tmp_path, store)
+    metas = [
+        m for m in store.all_metadatas()
+        if m["source"] == "context/handoff-3d-printing-guide.md"
+    ]
+    assert metas
+    assert all(m["doc_class"] == "handoff" for m in metas)
+
+
+def test_doc_class_trailing_handoff_token_is_note_not_handoff(tmp_path, store):
+    # RM-fixafter2 slice 2: the TRAILING form ("word-handoff.md") is DROPPED.
+    # It was the source of the false positive this fix-after reports
+    # (context/notes-on-handoff.md -> handoff); the grammar is leading-stem
+    # only now, so a token in trailing position never matches.
     ctx = tmp_path / "context"
     ctx.mkdir()
     (ctx / "morning-dispatch-handoff.md").write_text(
-        "No frontmatter. Real vault mirrors sometimes name the token trailing.\n",
+        "No frontmatter. The token is trailing, not leading -- must be 'note' now.\n",
         encoding="utf-8",
     )
     ingest(tmp_path, store)
@@ -382,6 +434,126 @@ def test_doc_class_trailing_handoff_token_is_handoff(tmp_path, store):
         m for m in store.all_metadatas()
         if m["source"] == "context/morning-dispatch-handoff.md"
     ]
+    assert metas
+    assert all(m["doc_class"] == "note" for m in metas)
+
+
+# ---------------------------------------------------------------------------
+# leading-stem grammar rewrite (RM-fixafter2 slice 2, findings #3/#4/#5/#7).
+#
+# GRAMMAR (one sentence): a basename (extension-stripped, any of
+# MARKDOWN_EXTS) classifies "handoff" iff its FIRST '-'/'_'-delimited token
+# -- optionally after a YYYY-MM-DD date prefix -- case-insensitively equals
+# one of the mirror stems {handoff, active, resume}, with no constraint on
+# what (if anything) follows; a stem appearing anywhere else in the name
+# (trailing, embedded, substring-only) does not count.
+#
+# FIRES: a real vault mirror whose fallback previously missed it because the
+#        stem wasn't "handoff", or the trailing shape was too narrow --
+#        RESUME-world-v6.md, handoff-projectx.md, ACTIVE-projectx.md,
+#        resume-2026-09-03.md, RESUME-world-v7.md.
+# SILENT: "handoff" present but NOT as the first token --
+#        critique-of-the-handoff.md, research-handoff.md, _handoff.md.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "basename",
+    [
+        "RESUME-world-v6.md",
+        "handoff-projectx.md",
+        "ACTIVE-projectx.md",
+        "resume-2026-09-03.md",
+        "RESUME-world-v7.md",
+    ],
+)
+def test_doc_class_handoff_leading_stem_free_text_variants(tmp_path, store, basename):
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / basename).write_text(
+        "No frontmatter. Real vault session-bookkeeping mirror content.\n",
+        encoding="utf-8",
+    )
+    ingest(tmp_path, store)
+    metas = [m for m in store.all_metadatas() if m["source"] == f"context/{basename}"]
+    assert metas, f"{basename} was not ingested"
+    assert all(m["doc_class"] == "handoff" for m in metas)
+
+
+@pytest.mark.parametrize(
+    "basename",
+    [
+        "critique-of-the-handoff.md",
+        "research-handoff.md",
+        "_handoff.md",
+    ],
+)
+def test_doc_class_handoff_stem_not_leading_is_note(tmp_path, store, basename):
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / basename).write_text(
+        "No frontmatter. The word 'handoff' is not the first token here.\n",
+        encoding="utf-8",
+    )
+    ingest(tmp_path, store)
+    metas = [m for m in store.all_metadatas() if m["source"] == f"context/{basename}"]
+    assert metas, f"{basename} was not ingested"
+    assert all(m["doc_class"] == "note" for m in metas)
+
+
+def test_doc_class_stem_immediately_followed_by_text_no_separator_is_note(
+    tmp_path, store
+):
+    # Review follow-up: the grammar comment above _HANDOFF_LEADING_RE claimed
+    # "no constraint on what follows the stem", which overstated it -- the
+    # regex requires trailing text to start with its own "-"/"_" separator
+    # (or be absent) because that is what makes "handoff" a bounded TOKEN
+    # rather than a prefix. "handoff2026.md" has no separator, so
+    # "handoff2026" is one token, not the stem "handoff" -- must stay "note".
+    # (Comment corrected to match; this proves the actual code, not just the
+    # corrected wording.)
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "handoff2026.md").write_text(
+        "No frontmatter. The stem is immediately followed by digits, no separator.\n",
+        encoding="utf-8",
+    )
+    ingest(tmp_path, store)
+    metas = [m for m in store.all_metadatas() if m["source"] == "context/handoff2026.md"]
+    assert metas
+    assert all(m["doc_class"] == "note" for m in metas)
+
+
+def test_doc_class_dot_separator_after_stem_is_handoff(tmp_path, store):
+    # Finding #9 (RM-fixafter3): the post-stem separator class was narrowed
+    # from `[-_.]` to `[-_]` (RM-fixafter2 slice 2 rewrite comment above,
+    # ~L93-99) with no test covering the "." case -- "handoff.v2.md" silently
+    # flipped from "handoff" to "note". "." is a deliberate separator choice
+    # (a versioned mirror name like "handoff.v2.md" is a realistic filename
+    # shape), not an oversight; restore it and pin it with a test.
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "handoff.v2.md").write_text(
+        "No frontmatter. Dot-separated version suffix after the stem.\n",
+        encoding="utf-8",
+    )
+    ingest(tmp_path, store)
+    metas = [m for m in store.all_metadatas() if m["source"] == "context/handoff.v2.md"]
+    assert metas
+    assert all(m["doc_class"] == "handoff" for m in metas)
+
+
+def test_doc_class_markdown_extension_leading_stem_is_handoff(tmp_path, store):
+    # Finding #7: the matcher must build its extension alternation from
+    # MARKDOWN_EXTS (".md", ".markdown"), not hard-require ".md" -- a
+    # ".markdown" mirror file was previously invisible to the fallback.
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "handoff.markdown").write_text(
+        "No frontmatter. A .markdown mirror, not .md.\n", encoding="utf-8"
+    )
+    ingest(tmp_path, store)
+    metas = [m for m in store.all_metadatas() if m["source"] == "context/handoff.markdown"]
     assert metas
     assert all(m["doc_class"] == "handoff" for m in metas)
 
@@ -395,5 +567,147 @@ def test_ingest_default_handoff_mirror_params_unchanged(tmp_path, store):
     (ctx / "ACTIVE.md").write_text("Default mirror name, no override passed.\n", encoding="utf-8")
     ingest(tmp_path, store)
     metas = [m for m in store.all_metadatas() if m["source"] == "context/ACTIVE.md"]
+    assert metas
+    assert all(m["doc_class"] == "handoff" for m in metas)
+
+
+# ---------------------------------------------------------------------------
+# handoff_mirror_dir empty-string guard (RM-fixafter2 slice 1) -- an empty
+# string makes `path.parent.name.lower() == handoff_mirror_dir.lower()` true
+# for every ROOT-level file (PurePosixPath("root.md").parent.name == ""),
+# silently widening the doc_class fallback from "context" to the whole
+# corpus. ingest() must fail loud instead of silently doing that.
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_rejects_empty_handoff_mirror_dir(tmp_path, store):
+    with pytest.raises(ValueError):
+        ingest(tmp_path, store, handoff_mirror_dir="")
+
+
+def test_ingest_rejects_whitespace_only_handoff_mirror_dir(tmp_path, store):
+    with pytest.raises(ValueError):
+        ingest(tmp_path, store, handoff_mirror_dir="   ")
+
+
+# ---------------------------------------------------------------------------
+# handoff_mirror_dir shape guard (RM-fixafter3, finding #4) -- `path.parent
+# .name` (what `_doc_class` compares against) is ALWAYS a bare component for
+# a real file's relative path: pathlib strips slashes. A caller-supplied
+# handoff_mirror_dir that isn't ALSO bare -- "context/" (trailing slash),
+# "/context" (leading slash) -- can therefore never equal it, which
+# previously silently disabled the whole filename fallback for every file
+# in the corpus instead of raising loudly like the empty-string case above.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_dir", ["context/", "/context"])
+def test_ingest_rejects_non_bare_handoff_mirror_dir(tmp_path, store, bad_dir):
+    with pytest.raises(ValueError):
+        ingest(tmp_path, store, handoff_mirror_dir=bad_dir)
+
+
+@pytest.mark.parametrize("bad_dir", ["context/", "/context", ""])
+def test_doc_class_malformed_handoff_mirror_dir_never_matches(bad_dir):
+    # Belt-and-braces: _doc_class's OWN guard, exercised directly (bypassing
+    # ingest()'s outer raise) -- a malformed dir degrades to "no match"
+    # (never "note" widened to match everything, never a crash), which is
+    # the safe direction for a filter that is a convenience, not a security
+    # boundary.
+    from rag_mcp.ingest import _doc_class
+
+    assert (
+        _doc_class(
+            "context/handoff.md",
+            "No frontmatter.\n",
+            handoff_mirror_dir=bad_dir,
+        )
+        == "note"
+    )
+
+
+# ---------------------------------------------------------------------------
+# handoff_mirror_dir whitespace normalization (RM-fixafter3, finding #2) --
+# `_classifier_config_fingerprint` normalizes with .strip().lower() (feeding
+# the metav that decides whether a metadata-only refresh fires), while
+# `_doc_class`'s own directory comparison only .lower()'d it. A padded value
+# like " context " therefore produced the SAME metav as "context" (the
+# fingerprint strips) while classifying every real "context/" file
+# DIFFERENTLY (doc_class compared unstripped) -- a silent classification
+# drift with no metadata-refresh trigger to catch it. ingest() now
+# normalizes (.strip()) once at its own boundary, so every downstream use
+# (fingerprint AND _doc_class) sees the identical value.
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_handoff_mirror_dir_whitespace_normalized_consistently(tmp_path, store):
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "handoff.md").write_text("No frontmatter, real mirror file.\n", encoding="utf-8")
+
+    ingest(tmp_path, store, handoff_mirror_dir=" context ")
+    metas = [m for m in store.all_metadatas() if m["source"] == "context/handoff.md"]
+    assert metas
+    assert all(m["doc_class"] == "handoff" for m in metas), (
+        "a whitespace-padded handoff_mirror_dir must still match the real "
+        "'context' directory, exactly like the unpadded value does"
+    )
+
+
+# ---------------------------------------------------------------------------
+# handoff_mirror_stems opt-out (RM-fixafter3, finding #6) -- {"handoff",
+# "active", "resume"} match as a free leading token independently of
+# handoff_mirror_basenames, with no way to opt a corpus out of "active"/
+# "resume" specifically (context/active-clients-2026.md -> "handoff" even
+# though it's an ordinary business file, not a session mirror).
+# handoff_mirror_stems= now lets a caller narrow the stem set; the default
+# is unchanged (matches every test above that doesn't pass it).
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_default_stems_still_match_active_leading_token(tmp_path, store):
+    # Pins the DEFAULT (unchanged) so the narrowing test below is a genuine
+    # opt-out, not a behavior change.
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "active-clients-2026.md").write_text(
+        "Not a session mirror -- an ordinary business file that happens to "
+        "start with 'active-'.\n",
+        encoding="utf-8",
+    )
+    ingest(tmp_path, store)
+    metas = [
+        m for m in store.all_metadatas() if m["source"] == "context/active-clients-2026.md"
+    ]
+    assert metas
+    assert all(m["doc_class"] == "handoff" for m in metas)
+
+
+def test_ingest_handoff_mirror_stems_narrowed_opts_out_active(tmp_path, store):
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "active-clients-2026.md").write_text(
+        "Not a session mirror -- an ordinary business file.\n", encoding="utf-8"
+    )
+    ingest(tmp_path, store, handoff_mirror_stems=("handoff",))
+    metas = [
+        m for m in store.all_metadatas() if m["source"] == "context/active-clients-2026.md"
+    ]
+    assert metas
+    assert all(m["doc_class"] == "note" for m in metas)
+
+
+def test_ingest_handoff_mirror_stems_narrowed_keeps_handoff_matching(tmp_path, store):
+    # SILENT/scope proof: narrowing stems to just "handoff" must not also
+    # break "handoff" itself.
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "handoff-projectx.md").write_text(
+        "No frontmatter. Real session-bookkeeping mirror content.\n", encoding="utf-8"
+    )
+    ingest(tmp_path, store, handoff_mirror_stems=("handoff",))
+    metas = [
+        m for m in store.all_metadatas() if m["source"] == "context/handoff-projectx.md"
+    ]
     assert metas
     assert all(m["doc_class"] == "handoff" for m in metas)

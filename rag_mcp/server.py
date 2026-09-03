@@ -24,7 +24,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
 from .lock import live_holder
-from .search import MAX_K, search_knowledge
+from .search import ALLOWED_DOC_CLASSES, MAX_K, search_knowledge
 
 # Lazily-opened store/root so importing the module never touches the model or disk.
 _STATE: dict[str, Any] = {"store": None, "root": None, "db_path": None}
@@ -72,7 +72,10 @@ _TOOL = types.Tool(
             },
             "doc_class": {
                 "type": "string",
-                "enum": ["note", "handoff"],
+                # Derived from ALLOWED_DOC_CLASSES (finding #11) so this
+                # schema can never drift from what search_knowledge()
+                # actually accepts -- sorted for a stable, readable wire shape.
+                "enum": sorted(ALLOWED_DOC_CLASSES),
                 "description": (
                     "Optional metadata filter: restrict results to chunks with this "
                     "exact doc_class (e.g. \"note\" to exclude session/agent handoff "

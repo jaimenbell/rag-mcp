@@ -206,3 +206,148 @@ def test_cli_query_without_doc_class_includes_all(mixed_class_corpus, tmp_path, 
     sources = {r["citation"]["source"] for r in result["results"]}
     assert "handoff.md" in sources
     assert "note.md" in sources
+
+
+# ---------------------------------------------------------------------------
+# --handoff-mirror-dir must reject empty/whitespace (RM-fixafter2 slice 1) --
+# an empty string widens the doc_class filename fallback from "context" to
+# the whole corpus root (path.parent.name == "" for a root-level file).
+# ---------------------------------------------------------------------------
+
+
+def test_cli_handoff_mirror_dir_empty_string_rejected(tmp_path, capsys):
+    db = tmp_path / "store.chroma"
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--embedder", "hash",
+                "ingest", str(tmp_path),
+                "--db", str(db),
+                "--handoff-mirror-dir", "",
+            ]
+        )
+
+
+def test_cli_handoff_mirror_dir_whitespace_only_rejected(tmp_path, capsys):
+    db = tmp_path / "store.chroma"
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--embedder", "hash",
+                "ingest", str(tmp_path),
+                "--db", str(db),
+                "--handoff-mirror-dir", "   ",
+            ]
+        )
+
+
+# ---------------------------------------------------------------------------
+# --handoff-mirror-dir must reject a non-bare shape (RM-fixafter3, finding
+# #4) -- "context/"/"/context" can never equal path.parent.name (always
+# bare), silently disabling the whole filename fallback instead of raising.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_dir", ["context/", "/context"])
+def test_cli_handoff_mirror_dir_non_bare_shape_rejected(tmp_path, capsys, bad_dir):
+    db = tmp_path / "store.chroma"
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--embedder", "hash",
+                "ingest", str(tmp_path),
+                "--db", str(db),
+                "--handoff-mirror-dir", bad_dir,
+            ]
+        )
+
+
+# ---------------------------------------------------------------------------
+# CLI summary carries chunks_metadata_refreshed (finding #9) -- an operator
+# reading a --quiet JSON log line must be able to see a metadata-only
+# backfill happened, without diffing manifests by hand.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_ingest_summary_includes_chunks_metadata_refreshed_key(tmp_path, capsys):
+    (tmp_path / "note.md").write_text("# Note\n\nSome body text.\n", encoding="utf-8")
+    db = tmp_path / "store.chroma"
+    rc = main(["--embedder", "hash", "ingest", str(tmp_path), "--db", str(db)])
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    assert "chunks_metadata_refreshed" in report
+    assert report["chunks_metadata_refreshed"] == 0  # first-ever run: nothing to refresh
+
+
+# ---------------------------------------------------------------------------
+# --doc-class validation + ok:false exit code (finding #10) -- `--doc-class
+# notes` (a typo) previously reached search_knowledge() as a runtime
+# invalid_doc_class error with exit 0; a caller checking only the exit code
+# would treat that as success. argparse choices= rejects it at parse time
+# instead, and _cmd_query now maps any ok:false payload to exit 1.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_query_invalid_doc_class_choice_rejected_at_parse_time(tmp_path):
+    db = tmp_path / "store.chroma"
+    rc = main(["--embedder", "hash", "ingest", str(tmp_path), "--db", str(db)])
+    assert rc == 0
+    with pytest.raises(SystemExit) as exc:
+        main(
+            [
+                "--embedder", "hash",
+                "query", "anything",
+                "--db", str(db), "--corpus", str(tmp_path),
+                "--doc-class", "notes",  # typo: "note" is valid, "notes" is not
+            ]
+        )
+    assert exc.value.code == 2  # argparse usage-error exit code
+
+
+def test_cli_query_ok_false_result_exits_nonzero(tmp_path, capsys):
+    # empty_store: a real, valid CLI invocation against a store that has
+    # never been ingested into -- ok:false, exit must not be 0.
+    db = tmp_path / "empty.chroma"
+    rc = main(
+        [
+            "--embedder", "hash",
+            "query", "anything",
+            "--db", str(db), "--corpus", str(tmp_path),
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is False
+    assert rc == 1
+
+
+def test_cli_query_ok_true_result_still_exits_zero(mixed_class_corpus, tmp_path, capsys):
+    # SILENT control: a normal, successful query keeps exiting 0.
+    db = tmp_path / "store2.chroma"
+    rc = main(["--embedder", "hash", "ingest", str(mixed_class_corpus), "--db", str(db)])
+    assert rc == 0
+    capsys.readouterr()
+
+    rc = main(
+        [
+            "--embedder", "hash",
+            "query", "dog project",
+            "--db", str(db), "--corpus", str(mixed_class_corpus),
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is True
+    assert rc == 0
+
+
+def test_cli_ingest_summary_includes_chunks_metadata_missing_key(tmp_path, capsys):
+    # Review follow-up: chunks_metadata_refreshed was wired into the --quiet
+    # summary (finding #9) but chunks_metadata_missing (finding #12's desync
+    # counter) was not -- the same "operator must see it without diffing
+    # manifests by hand" rationale applies at least as strongly to a desync.
+    (tmp_path / "note.md").write_text("# Note\n\nSome body text.\n", encoding="utf-8")
+    db = tmp_path / "store.chroma"
+    rc = main(["--embedder", "hash", "ingest", str(tmp_path), "--db", str(db)])
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    assert "chunks_metadata_missing" in report
+    assert report["chunks_metadata_missing"] == 0  # first-ever run: nothing to miss

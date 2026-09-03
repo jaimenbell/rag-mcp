@@ -17,10 +17,42 @@ from .ingest import (
     DEFAULT_HANDOFF_MIRROR_BASENAMES,
     DEFAULT_HANDOFF_MIRROR_DIR,
     EXCLUDE_PREFIXES,
+    _is_bare_dirname,
     ingest,
 )
 from .lock import LockHeld, ReingestLock
+from .search import ALLOWED_DOC_CLASSES
 from .store import BgeEmbedder, DefaultEmbedder, HashEmbedder, VectorStore
+
+
+def _non_empty_dirname(value: str) -> str:
+    """argparse `type=` validator: reject an empty/whitespace-only dirname.
+
+    An empty `--handoff-mirror-dir` would widen the doc_class filename
+    fallback from one named directory to the whole corpus root (see
+    `ingest()`'s matching guard) -- fail at parse time, not deep inside a run.
+
+    Strips whitespace here too (finding #2, RM-fixafter3) so the value this
+    boundary hands to `ingest()` is already normalized -- `ingest()` strips
+    again defensively for callers that bypass the CLI, but the value should
+    be normalized at the FIRST boundary it crosses, not just the last one.
+
+    Also rejects a non-bare shape ("context/", "/context") at parse time
+    (finding #4, RM-fixafter3) -- belt-and-braces alongside `ingest()`'s own
+    guard, same reasoning: fail loud at the CLI boundary, not deep inside a
+    run that would otherwise silently match zero files.
+    """
+    if not value or not value.strip():
+        raise argparse.ArgumentTypeError(
+            "--handoff-mirror-dir must not be empty/whitespace-only"
+        )
+    if not _is_bare_dirname(value):
+        raise argparse.ArgumentTypeError(
+            "--handoff-mirror-dir must be a single bare directory name -- no "
+            "leading/trailing slash, no embedded path separator (e.g. "
+            "'context', not 'context/' or '/context')"
+        )
+    return value.strip()
 
 
 def _embedder(name: str):
@@ -139,6 +171,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         "chunks_added": report.chunks_added,
         "chunks_deleted": report.chunks_deleted,
         "chunks_deduped": report.chunks_deduped,
+        "chunks_metadata_refreshed": report.chunks_metadata_refreshed,
+        "chunks_metadata_missing": report.chunks_metadata_missing,
         "incremental": report.incremental,
         "store_count": store.count(),
     }
@@ -164,7 +198,12 @@ def _cmd_query(args: argparse.Namespace) -> int:
         doc_class=args.doc_class,
     )
     print(json.dumps(result, indent=2))
-    return 0
+    # search_knowledge() is fail-soft: it never raises, it returns
+    # {"ok": False, "error": {...}} (empty_store, store_unreachable,
+    # invalid_query, invalid_doc_class). A caller that shells out to this
+    # CLI and checks only the exit code must be able to see that from the
+    # exit code alone, not just the JSON body.
+    return 0 if result.get("ok", False) else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -231,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     p_ing.add_argument(
         "--handoff-mirror-dir",
         default=DEFAULT_HANDOFF_MIRROR_DIR,
+        type=_non_empty_dirname,
         metavar="DIRNAME",
         help=(
             "parent directory name (not a path) eligible for the doc_class "
@@ -261,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
         "--doc-class",
         dest="doc_class",
         default=None,
+        choices=sorted(ALLOWED_DOC_CLASSES),
         help=(
             "restrict results to chunks with this exact doc_class "
             "(e.g. \"note\" to exclude session/agent handoff bookkeeping "

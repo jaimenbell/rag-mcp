@@ -300,12 +300,18 @@ def test_query_where_field_absent_from_stored_metadata_returns_empty_not_error(
 # synthetic control used 5,200 chunks -- under the cap -- so it never fired.
 # ---------------------------------------------------------------------------
 class _RecordingCollection:
-    def __init__(self):
+    def __init__(self, missing_ids: frozenset[str] = frozenset()):
         self.calls: list[int] = []
+        self.get_calls: list[int] = []
+        self._missing_ids = missing_ids
 
     def update(self, *, ids, metadatas):
         assert len(ids) == len(metadatas)
         self.calls.append(len(ids))
+
+    def get(self, *, ids, include):
+        self.get_calls.append(len(ids))
+        return {"ids": [i for i in ids if i not in self._missing_ids]}
 
 
 class _FakeClient:
@@ -316,12 +322,12 @@ class _FakeClient:
         return self._max
 
 
-def _store_with_fakes(max_batch):
+def _store_with_fakes(max_batch, missing_ids: frozenset[str] = frozenset()):
     from rag_mcp.store import VectorStore
 
     store = VectorStore.__new__(VectorStore)
     store._client = _FakeClient(max_batch)
-    store._collection = _RecordingCollection()
+    store._collection = _RecordingCollection(missing_ids=missing_ids)
     return store
 
 
@@ -345,3 +351,34 @@ def test_update_metadatas_falls_back_when_client_has_no_max():
     n = 5001
     store.update_metadatas(ids=[f"c{i}" for i in range(n)], metadatas=[{}] * n)
     assert sum(store._collection.calls) == n and max(store._collection.calls) <= 5000
+
+
+# ---------------------------------------------------------------------------
+# existing_ids -- verify presence rather than trust update_metadatas'
+# silent-ignore-unknown-ids behavior (finding #12).
+# ---------------------------------------------------------------------------
+
+
+def test_existing_ids_FIRES_reports_only_present_subset():
+    store = _store_with_fakes(max_batch=100, missing_ids=frozenset({"c1"}))
+    found = store.existing_ids(["c0", "c1", "c2"])
+    assert found == {"c0", "c2"}
+
+
+def test_existing_ids_SILENT_all_present_returns_all():
+    store = _store_with_fakes(max_batch=100)
+    found = store.existing_ids(["c0", "c1", "c2"])
+    assert found == {"c0", "c1", "c2"}
+
+
+def test_existing_ids_batches_at_max_batch_size():
+    store = _store_with_fakes(max_batch=100)
+    n = 250
+    store.existing_ids([f"c{i}" for i in range(n)])
+    assert store._collection.get_calls == [100, 100, 50]
+
+
+def test_existing_ids_empty_input_short_circuits_no_get_call():
+    store = _store_with_fakes(max_batch=100)
+    assert store.existing_ids([]) == set()
+    assert store._collection.get_calls == []

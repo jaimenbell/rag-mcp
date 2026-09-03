@@ -35,6 +35,11 @@ tools:
       - name: doc_class
         type: string
         required: false
+        # Kept in parity with rag_mcp.search.ALLOWED_DOC_CLASSES by
+        # tests/test_server.py's enum-parity test (finding #11) -- mcp-factory's
+        # own ArgSpec ignores unknown keys like this one, it exists for that
+        # test (and any operator reading this file) to check against.
+        enum: [handoff, note]
         description: >
           Optional metadata filter: restrict results to chunks with this exact doc_class
           (e.g. "note" to exclude session/agent handoff bookkeeping mirrors). One of

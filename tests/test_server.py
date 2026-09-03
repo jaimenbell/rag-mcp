@@ -9,7 +9,7 @@ import pytest
 import yaml
 from mcp import types
 
-from rag_mcp import server as srv
+from rag_mcp import search, server as srv
 from rag_mcp.ingest import ingest
 from rag_mcp.search import search_knowledge
 from rag_mcp.store import HashEmbedder, VectorStore
@@ -155,3 +155,35 @@ def test_mcp_yaml_tool_args_match_server_schema_properties():
         f"properties {sorted(schema_props)} -- keep both in sync by hand "
         "whenever either changes."
     )
+
+
+# ---------------------------------------------------------------------------
+# doc_class enum parity (finding #11) -- server.py's tool schema hardcodes
+# ["note", "handoff"] and mcp.yaml's doc_class arg only carried prose ("One
+# of 'note' or 'handoff'"); nothing kept either in sync with
+# search.ALLOWED_DOC_CLASSES, the actual source of truth. A drift here means
+# the schema a caller sees (what's advertised as valid) silently disagrees
+# with what search_knowledge() actually accepts.
+# ---------------------------------------------------------------------------
+
+
+def test_server_schema_doc_class_enum_matches_allowed_doc_classes():
+    schema_enum = set(srv._TOOL.input_schema["properties"]["doc_class"]["enum"])
+    assert schema_enum == search.ALLOWED_DOC_CLASSES
+
+
+def test_mcp_yaml_doc_class_enum_matches_allowed_doc_classes():
+    raw = yaml.safe_load(_MCP_YAML_PATH.read_text(encoding="utf-8"))
+    tool_entry = next(t for t in raw["tools"] if t["name"] == "search_knowledge")
+    doc_class_arg = next(a for a in tool_entry["args"] if a["name"] == "doc_class")
+    yaml_enum = set(doc_class_arg["enum"])
+    assert yaml_enum == search.ALLOWED_DOC_CLASSES
+
+
+def test_doc_class_enum_parity_check_FIRES_when_one_side_widens():
+    # Proves the equality check above actually discriminates -- widen one
+    # side locally (never touching the real schema/module) and confirm the
+    # SAME assertion shape now fails.
+    schema_enum = set(srv._TOOL.input_schema["properties"]["doc_class"]["enum"])
+    widened = schema_enum | {"draft"}  # a hypothetical un-synced third class
+    assert widened != search.ALLOWED_DOC_CLASSES
