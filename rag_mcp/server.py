@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 r"""rag-mcp MCP server - exposes a single retrieval tool over stdio.
 
-Tool: search_knowledge(query, k) -> top-k chunks with citations.
+Tool: search_knowledge(query, k, doc_class=None) -> top-k chunks with citations.
 
 Reliability (see rag_mcp.search): auth-scoped to the configured corpus root,
 fail-soft (structured errors, never crashes the agent), version-pinned deps.
@@ -69,6 +69,14 @@ _TOOL = types.Tool(
             "k": {
                 "type": "number",
                 "description": f"Max passages to return, 1-{MAX_K} (default 5).",
+            },
+            "doc_class": {
+                "type": "string",
+                "description": (
+                    "Optional metadata filter: restrict results to chunks with this "
+                    "exact doc_class (e.g. \"note\" to exclude session/agent handoff "
+                    "bookkeeping mirrors). Omit for no filter."
+                ),
             },
         },
         "required": ["query"],
@@ -196,6 +204,7 @@ def _run_search(arguments: dict[str, Any]) -> dict[str, Any]:
         k=arguments.get("k", 5),
         store=store,
         corpus_root=root,
+        doc_class=arguments.get("doc_class"),
     )
 
 

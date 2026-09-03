@@ -9,6 +9,7 @@ from mcp import types
 
 from rag_mcp import server as srv
 from rag_mcp.ingest import ingest
+from rag_mcp.search import search_knowledge
 from rag_mcp.store import HashEmbedder, VectorStore
 
 
@@ -65,3 +66,64 @@ def test_call_tool_unknown_tool_is_structured():
     assert payload["error"]["type"] == "unknown_tool"
     # Fail-soft: a structured payload, never a protocol-level error flag.
     assert out.is_error is False
+
+
+# ---------------------------------------------------------------------------
+# doc_class filter wiring (RM-ragmcp-docclass slice 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mixed_corpus(tmp_path):
+    (tmp_path / "note.md").write_text(
+        "# Note\n\nA loyal dog barks at the mail carrier every single day.\n",
+        encoding="utf-8",
+    )
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "handoff.md").write_text(
+        "---\ntype: handoff\n---\n"
+        "# Handoff\n\nA loyal dog barks at the mail carrier every single day.\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def mixed_wired(mixed_corpus, tmp_path):
+    db = tmp_path / "srv_mixed.chroma"
+    store = VectorStore(path=str(db), collection_name="knowledge", embedder=HashEmbedder())
+    ingest(mixed_corpus, store)
+    srv._STATE["store"] = store
+    srv._STATE["root"] = mixed_corpus
+    yield store, mixed_corpus
+    srv._STATE["store"] = None
+    srv._STATE["root"] = None
+
+
+def test_tool_schema_exposes_doc_class_as_optional():
+    tool = srv._TOOL
+    props = tool.input_schema["properties"]
+    assert "doc_class" in props
+    assert "doc_class" not in tool.input_schema["required"]
+
+
+def test_call_tool_doc_class_filter_excludes_handoff(mixed_wired):
+    out = _call("search_knowledge", {"query": "loyal dog barks", "k": 5, "doc_class": "note"})
+    payload = json.loads(out.content[0].text)
+    assert payload["ok"] is True
+    assert payload["results"]
+    assert all(r["citation"]["source"] == "note.md" for r in payload["results"])
+
+
+def test_call_tool_doc_class_parity_with_direct_search_knowledge(mixed_wired):
+    # PARITY: the server tool path and the direct search_knowledge() path must
+    # return identical results for the same query + filter -- the tool is a
+    # thin pass-through, never a second implementation of the filter.
+    store, root = mixed_wired
+    direct = search_knowledge(
+        "loyal dog barks", k=5, store=store, corpus_root=root, doc_class="note"
+    )
+    out = _call("search_knowledge", {"query": "loyal dog barks", "k": 5, "doc_class": "note"})
+    via_tool = json.loads(out.content[0].text)
+    assert via_tool == direct

@@ -203,3 +203,79 @@ def test_config_opts_into_bge_via_env(tmp_path, monkeypatch):
     cfg = Config.from_env()
     assert cfg.embedder_name == "bge"
     assert isinstance(cfg.make_embedder(), BgeEmbedder)
+
+
+# ---------------------------------------------------------------------------
+# VectorStore.query(where=...) — metadata filter (RM-ragmcp-docclass slice 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def doc_class_store(embedder: HashEmbedder) -> VectorStore:
+    import uuid
+
+    s = VectorStore(
+        path=None, collection_name=f"test_{uuid.uuid4().hex}", embedder=embedder
+    )
+    s.add(
+        ids=["note.md::0"],
+        documents=["a loyal dog barks at the mail carrier every single day"],
+        metadatas=[{"source": "note.md", "heading": "", "chunk_index": 0, "doc_class": "note"}],
+    )
+    s.add(
+        ids=["context/handoff.md::0"],
+        documents=["a loyal dog barks at the mail carrier every single day"],
+        metadatas=[
+            {
+                "source": "context/handoff.md",
+                "heading": "",
+                "chunk_index": 0,
+                "doc_class": "handoff",
+            }
+        ],
+    )
+    return s
+
+
+def test_query_where_filters_to_matching_doc_class(doc_class_store):
+    # FIRES: where={"doc_class": "note"} returns only the note chunk.
+    hits = doc_class_store.query("loyal dog barks", k=5, where={"doc_class": "note"})
+    assert hits
+    assert all(h["metadata"]["doc_class"] == "note" for h in hits)
+    assert {h["metadata"]["source"] for h in hits} == {"note.md"}
+
+
+def test_query_where_none_returns_both(doc_class_store):
+    # SILENT: default (no filter) is unchanged -- both chunks come back.
+    hits = doc_class_store.query("loyal dog barks", k=5, where=None)
+    sources = {h["metadata"]["source"] for h in hits}
+    assert sources == {"note.md", "context/handoff.md"}
+
+
+def test_query_default_omits_where_kwarg_entirely(doc_class_store):
+    # SILENT: calling without the new kwarg at all behaves exactly as before.
+    hits = doc_class_store.query("loyal dog barks", k=5)
+    sources = {h["metadata"]["source"] for h in hits}
+    assert sources == {"note.md", "context/handoff.md"}
+
+
+def test_query_where_field_absent_from_stored_metadata_returns_empty_not_error(
+    embedder,
+):
+    # Pre-reingest state: a store whose docs were embedded before this feature
+    # shipped, so their metadata has no "doc_class" key AT ALL (not just a
+    # non-matching value). A where clause on a field no stored metadata carries
+    # must come back EMPTY, never raise -- this is exactly the shape of the
+    # live store between this code shipping and the next reingest.bat tick.
+    import uuid
+
+    s = VectorStore(
+        path=None, collection_name=f"test_{uuid.uuid4().hex}", embedder=embedder
+    )
+    s.add(
+        ids=["old.md::0"],
+        documents=["a loyal dog barks at the mail carrier every single day"],
+        metadatas=[{"source": "old.md", "heading": "", "chunk_index": 0}],
+    )
+    hits = s.query("loyal dog barks", k=5, where={"doc_class": "note"})
+    assert hits == []

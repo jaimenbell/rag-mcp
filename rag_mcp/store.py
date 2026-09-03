@@ -231,7 +231,7 @@ class VectorStore:
             return
         self._collection.delete(ids=list(ids))
 
-    def query(self, text: str, k: int = 5) -> list[dict]:
+    def query(self, text: str, k: int = 5, where: dict | None = None) -> list[dict]:
         if k <= 0:
             return []
         # Query-side instruction prefix (e.g. bge's "Represent this sentence for
@@ -239,7 +239,15 @@ class VectorStore:
         # see this -- bge is an asymmetric encoder and only wants it on queries.
         prefixed = self.embedder.query_prefix + text
         q = self.embedder([prefixed])[0]
-        res = self._collection.query(query_embeddings=[q], n_results=k)
+        # `where` is only added to the call when the caller passed one -- Chroma
+        # rejects `where={}` outright, and passing `where=None` explicitly is
+        # not equivalent to omitting the kwarg on every Chroma version, so the
+        # default (no filter) path must stay byte-identical to pre-filter
+        # behavior rather than relying on Chroma to treat None as "no filter".
+        kwargs: dict = {"query_embeddings": [q], "n_results": k}
+        if where is not None:
+            kwargs["where"] = where
+        res = self._collection.query(**kwargs)
         docs = (res.get("documents") or [[]])[0]
         metas = (res.get("metadatas") or [[]])[0]
         dists = (res.get("distances") or [[]])[0]

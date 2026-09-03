@@ -50,8 +50,16 @@ def search_knowledge(
     *,
     store: Any,
     corpus_root: Path | str,
+    doc_class: str | None = None,
 ) -> dict[str, Any]:
     """Embed the query, retrieve top-k chunks, return text + citations.
+
+    ``doc_class``, when given, restricts results to chunks whose ingest-time
+    metadata carries that exact ``doc_class`` (see rag_mcp.ingest._doc_class --
+    "note" vs "handoff" today). ``None`` (the default) applies no filter and is
+    byte-identical to the pre-filter behavior. A store whose chunks predate this
+    field entirely (ingested before this feature shipped) has no matches for any
+    ``doc_class`` value -- this fails soft to an empty result set, never an error.
 
     Always returns a dict; never raises. See module docstring for the contract.
     """
@@ -81,8 +89,10 @@ def search_knowledge(
     except Exception as exc:  # noqa: BLE001 - any backend failure -> structured error
         return _error("store_unreachable", f"could not reach the knowledge store: {exc}", k=effective_k)
 
+    where = {"doc_class": doc_class} if isinstance(doc_class, str) and doc_class else None
+
     try:
-        hits = store.query(query, k=effective_k)
+        hits = store.query(query, k=effective_k, where=where)
     except Exception as exc:  # noqa: BLE001
         return _error("store_unreachable", f"query failed: {exc}", k=effective_k)
 

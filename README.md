@@ -116,11 +116,33 @@ deletes the store first. Both still WRITE a manifest, so the next run is cheap.
 
 ## As an MCP server
 Register via `mcp.yaml` (validated against mcp-factory's `Manifest` loader). The tool is
-`search_knowledge(query, k)`; it reads the store configured by the `RAG_MCP_*` env vars.
+`search_knowledge(query, k, doc_class=None)`; it reads the store configured by the
+`RAG_MCP_*` env vars.
+
+### Filtering by document class
+Every chunk's metadata carries a `doc_class`, set at ingest time. It is `"handoff"` when
+the doc's YAML frontmatter has `type: handoff` or a `tags` entry of `handoff`
+(case-insensitive), or -- since a doc's frontmatter is optional and the session mirrors
+this exists to flag often carry none -- when the file sits directly under a `context/`
+directory and is named `handoff.md` / `active.md` / `resume.md` or contains `handoff` in
+its name. Everything else defaults to `"note"`. Pass `doc_class` to scope a query to one
+class, e.g. to keep an agent's own session/handoff bookkeeping out of a knowledge lookup:
+
+```python
+from rag_mcp.search import search_knowledge
+
+search_knowledge(
+    "what did we decide about X", k=5, store=store, corpus_root=root, doc_class="note",
+)
+```
+
+`doc_class` only reaches the index on the next ingest run -- querying an
+already-populated store with a filter before its next reingest matches nothing for any
+value and returns an empty, `ok: true` result, never an error.
 
 ## Tests
 ```bash
-python -m pytest        # 149 passed
+python -m pytest        # 174 passed
 ```
 
 ## Layout

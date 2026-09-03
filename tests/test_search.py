@@ -103,3 +103,58 @@ def test_k_bounds_respected(populated):
     res_lo = search_knowledge("animal", k=0, store=store, corpus_root=root)
     assert res_lo["k"] == 1
     assert len(res_lo["results"]) <= 1
+
+
+# ---------------------------------------------------------------------------
+# doc_class filter (RM-ragmcp-docclass slice 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mixed_corpus(tmp_path):
+    """One plain note + one handoff-shaped mirror, same body text so a query
+    for that text would otherwise return both -- isolates the filter's effect.
+    """
+    (tmp_path / "note.md").write_text(
+        "# Note\n\nA loyal dog barks at the mail carrier every single day.\n",
+        encoding="utf-8",
+    )
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "handoff.md").write_text(
+        "---\ntype: handoff\n---\n"
+        "# Handoff\n\nA loyal dog barks at the mail carrier every single day.\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_doc_class_filter_restricts_to_matching_class(mixed_corpus, store):
+    # FIRES: doc_class="note" excludes the handoff-classed mirror.
+    ingest(mixed_corpus, store)
+    res = search_knowledge(
+        "loyal dog barks", k=5, store=store, corpus_root=mixed_corpus, doc_class="note"
+    )
+    assert res["ok"] is True
+    assert res["results"]
+    assert all(r["citation"]["source"] == "note.md" for r in res["results"])
+
+
+def test_doc_class_none_returns_all_classes(mixed_corpus, store):
+    # SILENT: omitting doc_class is unchanged -- both classes come back.
+    ingest(mixed_corpus, store)
+    res = search_knowledge("loyal dog barks", k=5, store=store, corpus_root=mixed_corpus)
+    sources = {r["citation"]["source"] for r in res["results"]}
+    assert sources == {"note.md", "context/handoff.md"}
+
+
+def test_doc_class_filter_field_absent_from_store_returns_empty_not_error(populated):
+    # The shared `populated` fixture's corpus predates doc_class entirely in
+    # this test's own conftest sense (ingest always sets it now, but a filter
+    # on a value nothing carries must still fail soft to an empty, ok result).
+    store, root = populated
+    res = search_knowledge(
+        "loyal dog", k=5, store=store, corpus_root=root, doc_class="archive"
+    )
+    assert res["ok"] is True
+    assert res["results"] == []

@@ -22,8 +22,10 @@ guarantees. Pass ``dedupe_snapshots=False`` to disable.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable
+
+import yaml
 
 from .chunking import DEFAULT_MAX_CHARS, DEFAULT_OVERLAP, Chunk, chunk_markdown
 from .manifest import IngestManifest, RunIdentity, content_hash, load_manifest
@@ -38,6 +40,11 @@ from .snapshots import (
 from .store import VectorStore
 
 MARKDOWN_EXTS = (".md", ".markdown")
+
+# Basenames (case-insensitive) of the vault's own session-bookkeeping mirrors --
+# see `_doc_class` docstring for why these need a filename fallback in addition
+# to frontmatter.
+_HANDOFF_MIRROR_BASENAMES = frozenset({"handoff.md", "active.md", "resume.md"})
 
 # Vault-relative POSIX path prefixes excluded from ingest by default.
 # Files whose relative path starts with any of these strings are silently skipped.
@@ -142,7 +149,71 @@ def _plan_snapshots(
     return build_plan(series, keys_by_rel), texts, chunks_by_rel
 
 
-def _metadata(rel: str, chunk: Chunk, plan: SnapshotPlan) -> dict:
+def _parse_frontmatter(text: str) -> dict:
+    """Parse a leading YAML frontmatter block. Tolerant by design.
+
+    Frontmatter is an optional Obsidian convention, not a hard contract, so
+    absence or invalid YAML must never be fatal -- both return ``{}``, which
+    ``_doc_class`` treats identically to "no frontmatter opinion".
+    """
+    if not text.startswith("---"):
+        return {}
+    lines = text.split("\n")
+    if lines[0].strip() != "---":
+        return {}
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            block = "\n".join(lines[1:i])
+            try:
+                data = yaml.safe_load(block)
+            except yaml.YAMLError:
+                return {}
+            return data if isinstance(data, dict) else {}
+    return {}  # no closing delimiter found
+
+
+def _doc_class(rel: str, text: str) -> str:
+    """Classify a document as "handoff" (session/agent bookkeeping) or "note".
+
+    Primary signal: YAML frontmatter ``type: handoff`` or a ``tags`` list
+    containing "handoff" (case-insensitive) -- the durable, content-driven
+    design this feature was specced around.
+
+    Fallback (added 2026-09-03, live-verified against the vault): the three
+    canonical session mirrors this exists to flag -- ``context/handoff.md``,
+    ``context/ACTIVE.md``, ``context/RESUME.md`` -- do NOT currently carry
+    that frontmatter. ``ACTIVE.md`` and ``RESUME.md`` ship with no frontmatter
+    block at all, and ``handoff.md``'s frontmatter (title/date/version/
+    supersedes/threads/next_orchestrator) has no ``type``/``tags`` field
+    naming it a handoff. Frontmatter alone would therefore classify none of
+    them "handoff" today, defeating the whole point. This fallback closes that
+    gap using the SAME scope as the existing consumer-side workaround
+    (``shared/scripts/research_precheck.py``'s ``_is_handoff_mirror``, added
+    2026-09-03): parent directory literal "context", and a basename that is
+    one of the known mirror names or contains "handoff" -- never the whole
+    vault or the whole ``context/`` tree, so an unrelated same-named file
+    elsewhere in the corpus stays "note".
+    """
+    fm = _parse_frontmatter(text)
+    fm_type = str(fm.get("type", "") or "").strip().lower()
+    fm_tags = fm.get("tags") or []
+    if not isinstance(fm_tags, list):
+        fm_tags = [fm_tags]
+    fm_tags_lower = {str(t).strip().lower() for t in fm_tags}
+    if fm_type == "handoff" or "handoff" in fm_tags_lower:
+        return "handoff"
+
+    path = PurePosixPath(rel)
+    basename = path.name.lower()
+    if path.parent.name == "context" and (
+        basename in _HANDOFF_MIRROR_BASENAMES or "handoff" in basename
+    ):
+        return "handoff"
+
+    return "note"
+
+
+def _metadata(rel: str, chunk: Chunk, plan: SnapshotPlan, doc_class: str) -> dict:
     """Citation metadata for one chunk.
 
     For a snapshot-series chunk this also carries the per-date citability that
@@ -153,6 +224,7 @@ def _metadata(rel: str, chunk: Chunk, plan: SnapshotPlan) -> dict:
         "source": rel,
         "heading": chunk.heading if chunk.heading is not None else "",
         "chunk_index": chunk.chunk_index,
+        "doc_class": doc_class,
     }
     if plan.is_snapshot(rel):
         dates = plan.repeat_dates(rel, chunk.chunk_index)
@@ -273,6 +345,9 @@ def ingest(
         selected = [chunks[i] for i in kept_idx] if kept_idx is not None else list(chunks)
         new_ids = {f"{rel}::{c.chunk_index}" for c in selected}
         span_h = plan.span_signature(rel)
+        # Classified once per file (not per chunk) so every chunk of a doc
+        # carries the identical doc_class.
+        doc_class = _doc_class(rel, text)
 
         # An unchanged file only needs the chunks that are MISSING from the store
         # (normally none). Re-embedding the rest to record a metadata change
@@ -287,7 +362,7 @@ def ingest(
             store.add(
                 ids=[f"{rel}::{c.chunk_index}" for c in to_add],
                 documents=[c.text for c in to_add],
-                metadatas=[_metadata(rel, c, plan) for c in to_add],
+                metadatas=[_metadata(rel, c, plan, doc_class) for c in to_add],
             )
             report.files_ingested += 1
             report.chunks_added += len(to_add)
@@ -315,7 +390,7 @@ def ingest(
                 if cid in added_ids or cid not in prev_ids:
                     continue  # just written with fresh metadata, or not stored
                 refresh_ids.append(cid)
-                refresh_metas.append(_metadata(rel, c, plan))
+                refresh_metas.append(_metadata(rel, c, plan, doc_class))
 
         current.record(
             rel,
