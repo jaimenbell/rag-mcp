@@ -9,7 +9,7 @@ tags: [rag, retrieval, embeddings, mcp, portfolio]
 
 ## Blurb (verbatim - 3-4 lines)
 
-> **rag-mcp** is a retrieval-augmented-generation MCP tool: one tool, `search_knowledge(query, k)`,
+> **rag-mcp** is a retrieval-augmented-generation MCP tool: one tool, `search_knowledge(query, k, doc_class=None)`,
 > that embeds a query, vector-searches a local corpus, and returns the passages **with citations**
 > (source file + heading + chunk index) so every answer is traceable. It is **auth-scoped** (results
 > can't escape the configured corpus root), **fail-soft** (a down or empty store returns a structured

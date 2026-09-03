@@ -20,6 +20,15 @@ from typing import Any
 MAX_K = 20
 MAX_QUERY_LEN = 4000  # generous for a real search query; caps embedder input cost
 
+# Closed set of doc_class values search_knowledge accepts. Deliberately closed
+# (not "any string the store happens to contain") so a typo -- "notes" instead
+# of "note", or wrong-case "Note" -- fails LOUD as invalid_doc_class instead of
+# silently returning an empty, ok:true result that reads as "no matches" rather
+# than "your filter was wrong". Case-sensitive; matches rag_mcp.ingest._doc_class
+# exactly. Extend here (and in server.py's tool schema enum) when _doc_class
+# grows a new classification.
+ALLOWED_DOC_CLASSES = frozenset({"note", "handoff"})
+
 
 def _within_root(root: Path, source: str) -> bool:
     """True iff `source` (relative to root) stays inside root (no escape)."""
@@ -56,10 +65,17 @@ def search_knowledge(
 
     ``doc_class``, when given, restricts results to chunks whose ingest-time
     metadata carries that exact ``doc_class`` (see rag_mcp.ingest._doc_class --
-    "note" vs "handoff" today). ``None`` (the default) applies no filter and is
-    byte-identical to the pre-filter behavior. A store whose chunks predate this
-    field entirely (ingested before this feature shipped) has no matches for any
-    ``doc_class`` value -- this fails soft to an empty result set, never an error.
+    "note" vs "handoff" today; the full set is ``ALLOWED_DOC_CLASSES``).
+    ``None`` (the default) applies no filter and is byte-identical to the
+    pre-filter behavior. Matching is CASE-SENSITIVE and against a CLOSED set:
+    a value that is not a string, or a string not in ``ALLOWED_DOC_CLASSES``
+    (wrong case, a typo, or an empty string), returns an ``invalid_doc_class``
+    error rather than silently matching nothing -- a typo in a filter value
+    should never look identical to "no results". A syntactically valid
+    ``doc_class`` that simply has no matches in this store (e.g. a store whose
+    chunks predate the field, or predate a newly added class) still fails soft
+    to an empty, ``ok: true`` result -- that is a real, expected "nothing
+    matched", not a caller error.
 
     Always returns a dict; never raises. See module docstring for the contract.
     """
@@ -71,6 +87,15 @@ def search_knowledge(
             "invalid_query",
             f"query exceeds max length of {MAX_QUERY_LEN} characters "
             f"(got {len(query)}); shorten the query",
+        )
+
+    if doc_class is not None and (
+        not isinstance(doc_class, str) or doc_class not in ALLOWED_DOC_CLASSES
+    ):
+        return _error(
+            "invalid_doc_class",
+            f"doc_class must be one of {sorted(ALLOWED_DOC_CLASSES)} "
+            f"(case-sensitive) or omitted; got {doc_class!r}",
         )
 
     # Bound k.
@@ -89,7 +114,9 @@ def search_knowledge(
     except Exception as exc:  # noqa: BLE001 - any backend failure -> structured error
         return _error("store_unreachable", f"could not reach the knowledge store: {exc}", k=effective_k)
 
-    where = {"doc_class": doc_class} if isinstance(doc_class, str) and doc_class else None
+    # doc_class is already validated above: either None (no filter) or a
+    # member of ALLOWED_DOC_CLASSES.
+    where = {"doc_class": doc_class} if doc_class is not None else None
 
     try:
         hits = store.query(query, k=effective_k, where=where)

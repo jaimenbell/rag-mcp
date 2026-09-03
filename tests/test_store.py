@@ -259,6 +259,15 @@ def test_query_default_omits_where_kwarg_entirely(doc_class_store):
     assert sources == {"note.md", "context/handoff.md"}
 
 
+def test_query_where_empty_dict_treated_as_no_filter(doc_class_store):
+    # RM-fixafter-ragmcp slice 9: Chroma rejects where={} outright (measured:
+    # ValueError). VectorStore.query must not surface that -- an empty dict
+    # means "no filter", same as None or omitting the kwarg.
+    hits = doc_class_store.query("loyal dog barks", k=5, where={})
+    sources = {h["metadata"]["source"] for h in hits}
+    assert sources == {"note.md", "context/handoff.md"}
+
+
 def test_query_where_field_absent_from_stored_metadata_returns_empty_not_error(
     embedder,
 ):
@@ -279,3 +288,60 @@ def test_query_where_field_absent_from_stored_metadata_returns_empty_not_error(
     )
     hits = s.query("loyal dog barks", k=5, where={"doc_class": "note"})
     assert hits == []
+
+
+# ---------------------------------------------------------------------------
+# update_metadatas must respect Chroma's max batch size.
+#
+# Root-caused 2026-09-03 10:15 MDT in PRODUCTION: the first incremental run
+# after the doc_class backfill shipped tried to update 61,330 chunks in one
+# ``collection.update`` call and Chroma 1.5.9 refused with
+# "Batch size of 61330 is greater than max batch size of 5461". The lane's
+# synthetic control used 5,200 chunks -- under the cap -- so it never fired.
+# ---------------------------------------------------------------------------
+class _RecordingCollection:
+    def __init__(self):
+        self.calls: list[int] = []
+
+    def update(self, *, ids, metadatas):
+        assert len(ids) == len(metadatas)
+        self.calls.append(len(ids))
+
+
+class _FakeClient:
+    def __init__(self, max_batch):
+        self._max = max_batch
+
+    def get_max_batch_size(self):
+        return self._max
+
+
+def _store_with_fakes(max_batch):
+    from rag_mcp.store import VectorStore
+
+    store = VectorStore.__new__(VectorStore)
+    store._client = _FakeClient(max_batch)
+    store._collection = _RecordingCollection()
+    return store
+
+
+def test_update_metadatas_FIRES_splits_above_max_batch():
+    store = _store_with_fakes(max_batch=100)
+    n = 250
+    store.update_metadatas(ids=[f"c{i}" for i in range(n)], metadatas=[{"k": i} for i in range(n)])
+    assert store._collection.calls == [100, 100, 50]
+
+
+def test_update_metadatas_SILENT_single_call_at_or_below_max():
+    store = _store_with_fakes(max_batch=100)
+    store.update_metadatas(ids=[f"c{i}" for i in range(100)], metadatas=[{"k": i} for i in range(100)])
+    assert store._collection.calls == [100]
+
+
+def test_update_metadatas_falls_back_when_client_has_no_max():
+    store = _store_with_fakes(max_batch=100)
+    del store._client._max
+    store._client.get_max_batch_size = lambda: (_ for _ in ()).throw(AttributeError("no"))
+    n = 5001
+    store.update_metadatas(ids=[f"c{i}" for i in range(n)], metadatas=[{}] * n)
+    assert sum(store._collection.calls) == n and max(store._collection.calls) <= 5000

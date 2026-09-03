@@ -84,16 +84,26 @@ class IngestManifest:
     """Maps corpus-relative path -> what is currently embedded for that file.
 
     Per file: ``sha256`` (content hash), ``chunks`` (how many chunks the file
-    produces), and two OPTIONAL keys added for snapshot de-duplication:
+    produces), and three OPTIONAL keys:
 
-      * ``kept``  - the chunk indices actually embedded. Absent means "all of
-        them", which is the only thing that was ever true before dedupe existed.
-        This is the record of which ids are IN THE STORE, so pruning is a set
-        difference against it rather than a trailing-tail special case.
-      * ``spanh`` - fingerprint of the repeat-dates carried by this file's
-        surviving chunks. A survivor's span grows every day the repeat continues
-        even though the file itself never changes, and this is how an unchanged
-        file's metadata still gets refreshed exactly when it needs to be.
+      * ``kept``  - (snapshot de-dup) the chunk indices actually embedded.
+        Absent means "all of them", which is the only thing that was ever true
+        before dedupe existed. This is the record of which ids are IN THE
+        STORE, so pruning is a set difference against it rather than a
+        trailing-tail special case.
+      * ``spanh`` - (snapshot de-dup) fingerprint of the repeat-dates carried
+        by this file's surviving chunks. A survivor's span grows every day the
+        repeat continues even though the file itself never changes, and this
+        is how an unchanged file's metadata still gets refreshed exactly when
+        it needs to be.
+      * ``metav`` - (metadata backfill, added 2026-09-03) the ``_metadata``/
+        ``_doc_class`` schema version this file's STORED chunks were last
+        written with. Absent (or a stale int) means "predates the current
+        metadata rules" -- ingest.py uses this to trigger a metadata-only
+        refresh (no re-embed) for files whose content is otherwise unchanged,
+        so a rule change (e.g. a new ``doc_class`` fallback) backfills already-
+        embedded chunks on the next incremental run instead of waiting for a
+        full ``--clean`` rebuild. See ``ingest.CURRENT_METADATA_VERSION``.
     """
 
     identity: RunIdentity
@@ -134,6 +144,20 @@ class IngestManifest:
         value = record.get("spanh")
         return value if isinstance(value, str) else ""
 
+    def meta_version(self, rel: str) -> int:
+        """Metadata schema version this file's stored chunks were written with.
+
+        0 (the default for a missing record, or a record with no ``metav``)
+        means "predates metadata versioning" -- always less than any real
+        ``CURRENT_METADATA_VERSION``, so a pre-feature manifest degrades to
+        "needs a refresh" rather than silently trusting stale metadata.
+        """
+        record = self.files.get(rel)
+        if not record:
+            return 0
+        value = record.get("metav")
+        return value if isinstance(value, int) else 0
+
     def record(
         self,
         rel: str,
@@ -141,6 +165,7 @@ class IngestManifest:
         chunks: int,
         kept: Sequence[int] | None = None,
         span_hash: str = "",
+        meta_version: int = 0,
     ) -> None:
         entry: dict[str, Any] = {"sha256": digest, "chunks": chunks}
         # Only persist `kept` when it actually differs from "everything" -- the
@@ -150,6 +175,8 @@ class IngestManifest:
             entry["kept"] = list(kept)
         if span_hash:
             entry["spanh"] = span_hash
+        if meta_version:
+            entry["metav"] = meta_version
         self.files[rel] = entry
 
     # -- persistence -----------------------------------------------------
@@ -228,5 +255,8 @@ def load_manifest(store_dir: Path | str, identity: RunIdentity) -> IngestManifes
         spanh = record.get("spanh")
         if isinstance(spanh, str):
             entry["spanh"] = spanh
+        metav = record.get("metav")
+        if isinstance(metav, int):
+            entry["metav"] = metav
         clean[rel] = entry
     return IngestManifest(identity=identity, files=clean)

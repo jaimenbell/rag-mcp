@@ -72,10 +72,13 @@ _TOOL = types.Tool(
             },
             "doc_class": {
                 "type": "string",
+                "enum": ["note", "handoff"],
                 "description": (
                     "Optional metadata filter: restrict results to chunks with this "
                     "exact doc_class (e.g. \"note\" to exclude session/agent handoff "
-                    "bookkeeping mirrors). Omit for no filter."
+                    "bookkeeping mirrors). Case-sensitive; a value outside this enum "
+                    "returns an invalid_doc_class error rather than an empty result. "
+                    "Omit for no filter."
                 ),
             },
         },

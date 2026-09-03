@@ -148,13 +148,45 @@ def test_doc_class_none_returns_all_classes(mixed_corpus, store):
     assert sources == {"note.md", "context/handoff.md"}
 
 
-def test_doc_class_filter_field_absent_from_store_returns_empty_not_error(populated):
-    # The shared `populated` fixture's corpus predates doc_class entirely in
-    # this test's own conftest sense (ingest always sets it now, but a filter
-    # on a value nothing carries must still fail soft to an empty, ok result).
+def test_doc_class_valid_class_with_no_matches_returns_empty_not_error(populated):
+    # `populated`'s corpus (cats.md/dogs.md, no frontmatter) classifies every
+    # chunk "note" -- a syntactically valid doc_class that simply matches
+    # nothing here must still fail soft to an empty, ok result, not an error.
     store, root = populated
     res = search_knowledge(
-        "loyal dog", k=5, store=store, corpus_root=root, doc_class="archive"
+        "loyal dog", k=5, store=store, corpus_root=root, doc_class="handoff"
     )
     assert res["ok"] is True
     assert res["results"] == []
+
+
+# ---------------------------------------------------------------------------
+# doc_class validation (RM-fixafter-ragmcp slice 3) -- doc_class is a closed,
+# case-sensitive enum (rag_mcp.search.ALLOWED_DOC_CLASSES); anything outside
+# it is a caller error, not a silent empty match. This tightens the contract
+# from the merged range: previously ANY string (including a typo like
+# "archive"/"notes"/wrong-case "Note") fell through to an empty, ok:true
+# result indistinguishable from "no results" -- see the superseded
+# test_doc_class_filter_field_absent_from_store_returns_empty_not_error above.
+#
+# FIRES: a non-str type, a wrong-case value, and an unknown string all return
+#        ok:false / error.type == "invalid_doc_class".
+# SILENT: None (omitted) and every ALLOWED_DOC_CLASSES member behave exactly
+#         as before (proven by the other doc_class tests in this file).
+# ---------------------------------------------------------------------------
+
+
+def test_doc_class_invalid_type_rejected(populated):
+    store, root = populated
+    for bad in (["note"], 5, 3.14, {"note"}):
+        res = search_knowledge("loyal dog", k=5, store=store, corpus_root=root, doc_class=bad)
+        assert res["ok"] is False, f"doc_class={bad!r} should be rejected"
+        assert res["error"]["type"] == "invalid_doc_class"
+
+
+def test_doc_class_unknown_or_wrong_case_string_rejected(populated):
+    store, root = populated
+    for bad in ("Note", "notes", "archive", "HANDOFF", ""):
+        res = search_knowledge("loyal dog", k=5, store=store, corpus_root=root, doc_class=bad)
+        assert res["ok"] is False, f"doc_class={bad!r} should be rejected"
+        assert res["error"]["type"] == "invalid_doc_class"

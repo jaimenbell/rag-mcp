@@ -1,7 +1,7 @@
 """CLI: ingest a corpus, or run a one-off query against the store.
 
   python -m rag_mcp.cli ingest <corpus_dir> --db <db_path> [--embedder default|hash]
-  python -m rag_mcp.cli query "<text>" --db <db_path> --corpus <corpus_dir> [-k 5]
+  python -m rag_mcp.cli query "<text>" --db <db_path> --corpus <corpus_dir> [-k 5] [--doc-class note|handoff]
 """
 from __future__ import annotations
 
@@ -13,7 +13,12 @@ import sys
 import time
 from pathlib import Path
 
-from .ingest import EXCLUDE_PREFIXES, ingest
+from .ingest import (
+    DEFAULT_HANDOFF_MIRROR_BASENAMES,
+    DEFAULT_HANDOFF_MIRROR_DIR,
+    EXCLUDE_PREFIXES,
+    ingest,
+)
 from .lock import LockHeld, ReingestLock
 from .store import BgeEmbedder, DefaultEmbedder, HashEmbedder, VectorStore
 
@@ -109,6 +114,9 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         )
         # CLI --exclude flags AUGMENT the built-in defaults; they do not replace them.
         exclude_prefixes = EXCLUDE_PREFIXES + tuple(args.exclude)
+        handoff_mirror_basenames = DEFAULT_HANDOFF_MIRROR_BASENAMES | {
+            b.lower() for b in args.handoff_mirror_basename
+        }
         report = ingest(
             args.corpus_dir,
             store,
@@ -118,6 +126,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             # on the manifest happening to be gone.
             incremental=not args.full and not args.clean,
             dedupe_snapshots=not args.no_snapshot_dedupe,
+            handoff_mirror_dir=args.handoff_mirror_dir,
+            handoff_mirror_basenames=handoff_mirror_basenames,
         )
     finally:
         lock.release()
@@ -147,7 +157,11 @@ def _cmd_query(args: argparse.Namespace) -> int:
         embedder=_embedder(args.embedder),
     )
     result = search_knowledge(
-        args.text, k=args.k, store=store, corpus_root=Path(args.corpus).resolve()
+        args.text,
+        k=args.k,
+        store=store,
+        corpus_root=Path(args.corpus).resolve(),
+        doc_class=args.doc_class,
     )
     print(json.dumps(result, indent=2))
     return 0
@@ -214,6 +228,28 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="emit the run summary as a single JSON line (for frequent schedules).",
     )
+    p_ing.add_argument(
+        "--handoff-mirror-dir",
+        default=DEFAULT_HANDOFF_MIRROR_DIR,
+        metavar="DIRNAME",
+        help=(
+            "parent directory name (not a path) eligible for the doc_class "
+            f"filename fallback. Default: {DEFAULT_HANDOFF_MIRROR_DIR!r} (the "
+            "vault convention)."
+        ),
+    )
+    p_ing.add_argument(
+        "--handoff-mirror-basename",
+        action="append",
+        default=[],
+        metavar="BASENAME",
+        help=(
+            "extra basename (case-insensitive) to treat as a handoff mirror in "
+            "doc_class classification (repeatable). AUGMENTS the built-in "
+            f"defaults ({sorted(DEFAULT_HANDOFF_MIRROR_BASENAMES)}) rather than "
+            "replacing them -- same pattern as --exclude."
+        ),
+    )
     p_ing.set_defaults(func=_cmd_ingest)
 
     p_q = sub.add_parser("query", help="query the store")
@@ -221,6 +257,16 @@ def main(argv: list[str] | None = None) -> int:
     p_q.add_argument("--db", required=True)
     p_q.add_argument("--corpus", required=True, help="corpus root (auth scope)")
     p_q.add_argument("-k", type=int, default=5)
+    p_q.add_argument(
+        "--doc-class",
+        dest="doc_class",
+        default=None,
+        help=(
+            "restrict results to chunks with this exact doc_class "
+            "(e.g. \"note\" to exclude session/agent handoff bookkeeping "
+            "mirrors). Omit for no filter."
+        ),
+    )
     p_q.set_defaults(func=_cmd_query)
 
     args = parser.parse_args(argv)

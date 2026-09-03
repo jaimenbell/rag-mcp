@@ -75,3 +75,134 @@ def test_cli_ingest_exclude_nonmatching_leaves_live_intact(backup_corpus, tmp_pa
     assert rc == 0
     report = json.loads(capsys.readouterr().out)
     assert report["files_ingested"] == 1
+
+
+# ---------------------------------------------------------------------------
+# --doc-class (RM-fixafter-ragmcp slice 2) -- the search_knowledge doc_class
+# filter was never reachable from the CLI, so a caller that shells out to
+# `python -m rag_mcp.cli ... query ...` (rather than importing search_knowledge
+# directly) could not use it.
+#
+# FIRES: --doc-class note excludes a handoff-classified fixture from results.
+# SILENT: omitting the flag includes it (byte-identical to pre-feature).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mixed_class_corpus(tmp_path):
+    (tmp_path / "handoff.md").write_text(
+        "---\ntype: handoff\n---\n# Handoff\n\nSession bookkeeping about the dog project.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "note.md").write_text(
+        "# Note\n\nA plain research note about the dog project.\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_cli_query_doc_class_filters_out_excluded_class(mixed_class_corpus, tmp_path, capsys):
+    db = tmp_path / "store.chroma"
+    rc = main(
+        ["--embedder", "hash", "ingest", str(mixed_class_corpus), "--db", str(db)]
+    )
+    assert rc == 0
+    capsys.readouterr()
+
+    rc = main(
+        [
+            "--embedder", "hash",
+            "query", "dog project",
+            "--db", str(db),
+            "--corpus", str(mixed_class_corpus),
+            "--doc-class", "note",
+        ]
+    )
+    assert rc == 0
+    result = json.loads(capsys.readouterr().out)
+    sources = {r["citation"]["source"] for r in result["results"]}
+    assert "handoff.md" not in sources
+    assert "note.md" in sources
+
+
+def test_cli_ingest_handoff_mirror_dir_flag(tmp_path, capsys):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "handoff.md").write_text(
+        "No frontmatter; dir not 'context' so default would classify note.\n",
+        encoding="utf-8",
+    )
+    db = tmp_path / "store4.chroma"
+    rc = main(
+        [
+            "--embedder", "hash",
+            "ingest", str(tmp_path), "--db", str(db),
+            "--handoff-mirror-dir", "sessions",
+        ]
+    )
+    assert rc == 0
+    capsys.readouterr()
+    rc = main(
+        [
+            "--embedder", "hash",
+            "query", "no frontmatter",
+            "--db", str(db), "--corpus", str(tmp_path), "--doc-class", "handoff",
+        ]
+    )
+    assert rc == 0
+    result = json.loads(capsys.readouterr().out)
+    sources = {r["citation"]["source"] for r in result["results"]}
+    assert "sessions/handoff.md" in sources
+
+
+def test_cli_ingest_handoff_mirror_basename_flag_augments(tmp_path, capsys):
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "status.md").write_text("No frontmatter, custom basename only.\n", encoding="utf-8")
+    (ctx / "RESUME.md").write_text("Default mirror name, must still match.\n", encoding="utf-8")
+    db = tmp_path / "store5.chroma"
+    rc = main(
+        [
+            "--embedder", "hash",
+            "ingest", str(tmp_path), "--db", str(db),
+            "--handoff-mirror-basename", "status.md",
+        ]
+    )
+    assert rc == 0
+    capsys.readouterr()
+    rc = main(
+        [
+            "--embedder", "hash",
+            "query", "custom basename mirror name",
+            "-k", "5",
+            "--db", str(db), "--corpus", str(tmp_path), "--doc-class", "handoff",
+        ]
+    )
+    assert rc == 0
+    result = json.loads(capsys.readouterr().out)
+    sources = {r["citation"]["source"] for r in result["results"]}
+    assert "context/status.md" in sources
+    assert "context/RESUME.md" in sources
+
+
+def test_cli_query_without_doc_class_includes_all(mixed_class_corpus, tmp_path, capsys):
+    db = tmp_path / "store2.chroma"
+    rc = main(
+        ["--embedder", "hash", "ingest", str(mixed_class_corpus), "--db", str(db)]
+    )
+    assert rc == 0
+    capsys.readouterr()
+
+    rc = main(
+        [
+            "--embedder", "hash",
+            "query", "dog project",
+            "--db", str(db),
+            "--corpus", str(mixed_class_corpus),
+        ]
+    )
+    assert rc == 0
+    result = json.loads(capsys.readouterr().out)
+    sources = {r["citation"]["source"] for r in result["results"]}
+    assert "handoff.md" in sources
+    assert "note.md" in sources

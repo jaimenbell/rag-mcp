@@ -3,8 +3,9 @@
 [![CI](https://github.com/jaimenbell/rag-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/jaimenbell/rag-mcp/actions/workflows/ci.yml)
 
 > A minimal, honest **RAG-over-a-corpus MCP retrieval tool**. One tool,
-> `search_knowledge(query, k)`, that embeds a query, vector-searches a local corpus, and
-> returns passages **with citations** (source + heading + chunk index) so answers are traceable.
+> `search_knowledge(query, k, doc_class=None)`, that embeds a query, vector-searches a local
+> corpus, and returns passages **with citations** (source + heading + chunk index) so answers
+> are traceable.
 
 Built to slot into the [mcp-factory](https://github.com/jaimenbell/mcp-factory) manifest model.
 Fully local + **$0** (no paid embedding API).
@@ -56,6 +57,10 @@ python -m rag_mcp.cli ingest path/to/docs --db ./store.chroma --full
 
 # One-off query (corpus root = the auth scope)
 python -m rag_mcp.cli query "your question" --db ./store.chroma --corpus path/to/docs -k 5
+
+# Same, restricted to one doc_class ("note" or "handoff" -- see "Filtering by
+# document class" below)
+python -m rag_mcp.cli query "your question" --db ./store.chroma --corpus path/to/docs --doc-class note
 
 # Run as an MCP server (stdio); configure via env first
 #   RAG_MCP_CORPUS_ROOT, RAG_MCP_DB_PATH, RAG_MCP_COLLECTION, RAG_MCP_EMBEDDER
@@ -123,10 +128,15 @@ Register via `mcp.yaml` (validated against mcp-factory's `Manifest` loader). The
 Every chunk's metadata carries a `doc_class`, set at ingest time. It is `"handoff"` when
 the doc's YAML frontmatter has `type: handoff` or a `tags` entry of `handoff`
 (case-insensitive), or -- since a doc's frontmatter is optional and the session mirrors
-this exists to flag often carry none -- when the file sits directly under a `context/`
-directory and is named `handoff.md` / `active.md` / `resume.md` or contains `handoff` in
-its name. Everything else defaults to `"note"`. Pass `doc_class` to scope a query to one
-class, e.g. to keep an agent's own session/handoff bookkeeping out of a knowledge lookup:
+this exists to flag often carry none -- when the file sits directly under a
+`handoff_mirror_dir` (default `context/`, configurable via `ingest()`'s
+`handoff_mirror_dir=`/`handoff_mirror_basenames=` params or the CLI's
+`--handoff-mirror-dir`/`--handoff-mirror-basename` flags) and is named `handoff.md` /
+`active.md` / `resume.md`, or matches an anchored "handoff" filename token (e.g.
+`handoff-2026-09-03.md`, `morning-dispatch-handoff.md`) -- never a bare substring, so a
+title that merely mentions the word (`handoff-skill-redesign-spec.md`) stays `"note"`.
+Everything else defaults to `"note"`. Pass `doc_class` to scope a query to one class, e.g.
+to keep an agent's own session/handoff bookkeeping out of a knowledge lookup:
 
 ```python
 from rag_mcp.search import search_knowledge
@@ -136,13 +146,21 @@ search_knowledge(
 )
 ```
 
-`doc_class` only reaches the index on the next ingest run -- querying an
-already-populated store with a filter before its next reingest matches nothing for any
-value and returns an empty, `ok: true` result, never an error.
+`doc_class` is a validated, case-sensitive enum -- `"note"` or `"handoff"` (see
+`rag_mcp.search.ALLOWED_DOC_CLASSES`) -- or omitted for no filter. A value outside that
+set (wrong case, a typo, any other type) returns a structured `invalid_doc_class` error,
+same shape as `invalid_query`. A syntactically valid `doc_class` that simply has no
+matches in the current store still fails soft to an empty, `ok: true` result.
+
+An incremental ingest run backfills `doc_class` (and any other metadata-schema change) onto
+already-embedded, content-unchanged chunks WITHOUT re-embedding them -- see
+`ingest.CURRENT_METADATA_VERSION`. A store that predates this feature entirely gets the
+correct `doc_class` on every chunk after exactly one incremental run, not a full `--clean`
+rebuild.
 
 ## Tests
 ```bash
-python -m pytest        # 174 passed
+python -m pytest        # 197 passed
 ```
 
 ## Layout

@@ -341,3 +341,78 @@ class TestManifestFile:
     def test_content_hash_ignores_nothing_but_is_stable(self):
         assert content_hash("abc") == content_hash("abc")
         assert content_hash("abc") != content_hash("abd")
+
+
+# ---------------------------------------------------------------------------
+# metadata backfill (RM-fixafter-ragmcp slice 1) -- a `_doc_class`/`_metadata`
+# rule change must reach ALREADY-EMBEDDED, content-unchanged chunks on the
+# next incremental run, not just newly (re)embedded ones.
+#
+# FIRES: a file whose manifest record predates CURRENT_METADATA_VERSION (the
+#        real-world shape: a pre-doc_class-feature manifest has no `metav` at
+#        all, which reads as 0) gets its stored chunks' metadata refreshed --
+#        WITHOUT any re-embedding, which is the entire point of doing this as
+#        a metadata-only update rather than forcing a full re-embed.
+# SILENT: a file whose manifest record already carries the current
+#         `metav` triggers zero `update_metadatas` calls on the next run.
+# ---------------------------------------------------------------------------
+
+
+class TestMetadataBackfill:
+    def test_stale_metadata_version_backfills_without_reembedding(self, corpus_dir, tmp_path):
+        embedder = CountingEmbedder()
+        store = _store(tmp_path, embedder)
+        ingest(corpus_dir, store)  # writes metav=CURRENT_METADATA_VERSION already
+
+        # Simulate a PRE-feature manifest + store: strip `metav` from the
+        # on-disk manifest and blank `doc_class` in the store's metadata --
+        # mirrors the live shape the code reviewer measured (99.89% of chunks
+        # missing doc_class after an ordinary incremental run).
+        manifest_path = tmp_path / "inc.chroma" / MANIFEST_FILENAME
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for rec in raw["files"].values():
+            rec.pop("metav", None)
+        manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        metas = store.all_metadatas()
+        ids = [f"{m['source']}::{m['chunk_index']}" for m in metas]
+        blanked = [{**m, "doc_class": ""} for m in metas]
+        store.update_metadatas(ids=ids, metadatas=blanked)
+        assert all(m["doc_class"] == "" for m in store.all_metadatas())
+
+        embedder.texts_embedded = 0
+        report = ingest(corpus_dir, store)
+
+        assert embedder.texts_embedded == 0, (
+            "backfilling stale metadata must not re-embed -- that defeats the "
+            "entire incremental path"
+        )
+        assert report.chunks_added == 0
+        assert all(m["doc_class"] == "note" for m in store.all_metadatas()), (
+            "doc_class was not backfilled onto already-embedded chunks"
+        )
+
+        raw_after = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert all(
+            rec.get("metav") == 1 for rec in raw_after["files"].values()
+        ), "manifest must record the new metadata version after a backfill"
+
+    def test_current_metadata_version_triggers_zero_updates(
+        self, corpus_dir, tmp_path, monkeypatch
+    ):
+        store = _store(tmp_path)
+        ingest(corpus_dir, store)  # already at CURRENT_METADATA_VERSION
+
+        calls: list[int] = []
+        original = store.update_metadatas
+
+        def spy(*, ids, metadatas):
+            calls.append(len(ids))
+            return original(ids=ids, metadatas=metadatas)
+
+        monkeypatch.setattr(store, "update_metadatas", spy)
+
+        report = ingest(corpus_dir, store)
+
+        assert calls == [], "already-current metadata must not be re-written"
+        assert report.files_unchanged == 2

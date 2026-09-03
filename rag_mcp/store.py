@@ -219,7 +219,28 @@ class VectorStore:
         """
         if not ids:
             return
-        self._collection.update(ids=list(ids), metadatas=list(metadatas))
+        ids = list(ids)
+        metadatas = list(metadatas)
+        # Chroma refuses a single call above its max batch size (5,461 on the
+        # 1.5.9 SQLite backend). The doc_class backfill of 2026-09-03 hit this
+        # in production with 61,330 ids -- the synthetic control had used 5,200.
+        step = self._max_batch_size()
+        for start in range(0, len(ids), step):
+            self._collection.update(
+                ids=ids[start : start + step],
+                metadatas=metadatas[start : start + step],
+            )
+
+    _FALLBACK_MAX_BATCH = 5000
+
+    def _max_batch_size(self) -> int:
+        """Chroma's per-call limit, or a conservative constant if the client
+        cannot say (older clients, fakes in tests)."""
+        try:
+            n = int(self._client.get_max_batch_size())
+            return n if n > 0 else self._FALLBACK_MAX_BATCH
+        except Exception:
+            return self._FALLBACK_MAX_BATCH
 
     def delete(self, *, ids: Sequence[str]) -> None:
         """Remove chunks by id. Used to prune stale chunks during incremental ingest.
@@ -239,15 +260,14 @@ class VectorStore:
         # see this -- bge is an asymmetric encoder and only wants it on queries.
         prefixed = self.embedder.query_prefix + text
         q = self.embedder([prefixed])[0]
-        # `where` is only added to the call when the caller passed one -- Chroma
-        # rejects `where={}` outright, and passing `where=None` explicitly is
-        # not equivalent to omitting the kwarg on every Chroma version, so the
-        # default (no filter) path must stay byte-identical to pre-filter
-        # behavior rather than relying on Chroma to treat None as "no filter".
-        kwargs: dict = {"query_embeddings": [q], "n_results": k}
-        if where is not None:
-            kwargs["where"] = where
-        res = self._collection.query(**kwargs)
+        # Chroma (pinned chromadb==1.5.9, measured) rejects `where={}` outright
+        # but treats an explicit `where=None` identically to omitting the
+        # kwarg -- `where or None` collapses both the default (`None`) and an
+        # accidental empty-dict caller into the one shape Chroma accepts,
+        # while a real filter dict passes through unchanged.
+        res = self._collection.query(
+            query_embeddings=[q], n_results=k, where=where or None
+        )
         docs = (res.get("documents") or [[]])[0]
         metas = (res.get("metadatas") or [[]])[0]
         dists = (res.get("distances") or [[]])[0]

@@ -21,6 +21,7 @@ guarantees. Pass ``dedupe_snapshots=False`` to disable.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable
@@ -41,10 +42,43 @@ from .store import VectorStore
 
 MARKDOWN_EXTS = (".md", ".markdown")
 
-# Basenames (case-insensitive) of the vault's own session-bookkeeping mirrors --
-# see `_doc_class` docstring for why these need a filename fallback in addition
-# to frontmatter.
-_HANDOFF_MIRROR_BASENAMES = frozenset({"handoff.md", "active.md", "resume.md"})
+# Default parent-directory name + basenames (case-insensitive) for a corpus's
+# own session-bookkeeping mirrors -- see `_doc_class` docstring for why these
+# need a filename fallback in addition to frontmatter. This is a CALLER
+# convention, not a library-wide assumption: `ingest()`'s `handoff_mirror_dir`
+# / `handoff_mirror_basenames` parameters (and the CLI's matching flags, which
+# AUGMENT rather than replace these defaults -- same pattern as EXCLUDE_PREFIXES
+# / --exclude) let a different corpus override both without editing this file.
+DEFAULT_HANDOFF_MIRROR_DIR = "context"
+DEFAULT_HANDOFF_MIRROR_BASENAMES = frozenset({"handoff.md", "active.md", "resume.md"})
+
+# Anchored "handoff" filename-TOKEN matcher (fixed 2026-09-03; see
+# `_doc_class`'s docstring for the rule this replaced). The naive check it
+# replaced -- `"handoff" in basename` -- false-positived on ANY basename
+# containing the word anywhere, e.g. "handoff-skill-redesign-spec.md" (a note
+# ABOUT the handoff skill, not a session handoff record). This requires
+# "handoff" to appear as a bounded TOKEN, not a bare substring:
+#
+#   LEADING form (`_HANDOFF_LEADING_RE`): "handoff" at the START of the
+#   basename -- optionally after a YYYY-MM-DD date prefix -- followed by
+#   ".md" or a NARROWLY shaped suffix: nothing, a digit-led run
+#   ("-2026-09-03"), a short <=3-char alnum code ("-x", "-pm"), a run ENDING
+#   in a version tag ("-alphahive-world-v6"), or a run ENDING in a
+#   YYYY-MM-DD date ("-cross-project-2026-05-22"). Free text that fits none
+#   of those shapes ("-skill-redesign-spec") does NOT match, so a title that
+#   merely starts with the word stays "note".
+#
+#   TRAILING form (`_HANDOFF_TRAILING_RE`): a `-`/`_`/space separator then
+#   "handoff.md" (real mirrors sometimes name the token as a TRAILING word
+#   instead of a leading one, e.g. "morning-dispatch-handoff.md").
+_HANDOFF_TOKEN_SUFFIX = (
+    r"(?:[-_.](?:\d[\w.-]*|[a-z0-9]{1,3}|[\w.-]*-v\d[\w.-]*|[\w.-]*\d{4}-\d{2}-\d{2}))?"
+)
+_HANDOFF_LEADING_RE = re.compile(
+    r"^(?:\d{4}-\d{2}-\d{2}[-_ ])?handoff" + _HANDOFF_TOKEN_SUFFIX + r"\.md$",
+    re.IGNORECASE,
+)
+_HANDOFF_TRAILING_RE = re.compile(r"[-_ ]handoff\.md$", re.IGNORECASE)
 
 # Vault-relative POSIX path prefixes excluded from ingest by default.
 # Files whose relative path starts with any of these strings are silently skipped.
@@ -56,6 +90,20 @@ EXCLUDE_PREFIXES = (
     # (2/6 A/B regressions traced here at the 2026-07-02 cutover).
     "Routines/Wikilink Scan",
 )
+
+# Bumped when `_doc_class`/`_metadata` change in a way that requires backfilling
+# ALREADY-EMBEDDED chunks (added 2026-09-03 for the doc_class classifier). A
+# per-file version is stored in the manifest (`IngestManifest.record`'s
+# `meta_version` / `.meta_version(rel)`); an incremental run whose file is
+# otherwise unchanged (same content hash) but whose stored `metav` is behind
+# this constant does a METADATA-ONLY refresh -- re-chunk (cheap) and
+# `store.update_metadatas` -- without re-embedding (expensive, and the whole
+# point of the incremental path). A pre-feature manifest has no `metav` at
+# all, which `IngestManifest.meta_version` reads as 0 -- always stale -- so
+# the very next incremental run backfills every file exactly once. Do NOT bump
+# `manifest.MANIFEST_VERSION` for this: that forces a full re-embed, which a
+# metadata-only change never needs.
+CURRENT_METADATA_VERSION = 1
 
 
 @dataclass
@@ -102,9 +150,17 @@ def iter_corpus_files(
 
 
 def load_file(path: Path | str) -> str | None:
-    """Read a UTF-8 text file. Returns None (skip, not fatal) if it cannot decode."""
+    """Read a UTF-8 text file. Returns None (skip, not fatal) if it cannot decode.
+
+    ``utf-8-sig`` (not plain ``utf-8``): transparently strips a leading BOM
+    when present and is byte-identical to ``utf-8`` when it is not, so this
+    is a strict superset -- no existing file's decode changes. Without it a
+    BOM-prefixed file's text starts with U+FEFF, which breaks
+    ``_parse_frontmatter``'s ``text.startswith("---")`` check and silently
+    drops that file's frontmatter (including a ``type: handoff`` classifier).
+    """
     try:
-        return Path(path).read_text(encoding="utf-8")
+        return Path(path).read_text(encoding="utf-8-sig")
     except (UnicodeDecodeError, OSError):
         return None
 
@@ -172,27 +228,40 @@ def _parse_frontmatter(text: str) -> dict:
     return {}  # no closing delimiter found
 
 
-def _doc_class(rel: str, text: str) -> str:
+def _doc_class(
+    rel: str,
+    text: str,
+    *,
+    handoff_mirror_dir: str = DEFAULT_HANDOFF_MIRROR_DIR,
+    handoff_mirror_basenames: frozenset[str] | set[str] = DEFAULT_HANDOFF_MIRROR_BASENAMES,
+) -> str:
     """Classify a document as "handoff" (session/agent bookkeeping) or "note".
 
     Primary signal: YAML frontmatter ``type: handoff`` or a ``tags`` list
     containing "handoff" (case-insensitive) -- the durable, content-driven
     design this feature was specced around.
 
-    Fallback (added 2026-09-03, live-verified against the vault): the three
-    canonical session mirrors this exists to flag -- ``context/handoff.md``,
-    ``context/ACTIVE.md``, ``context/RESUME.md`` -- do NOT currently carry
-    that frontmatter. ``ACTIVE.md`` and ``RESUME.md`` ship with no frontmatter
-    block at all, and ``handoff.md``'s frontmatter (title/date/version/
-    supersedes/threads/next_orchestrator) has no ``type``/``tags`` field
-    naming it a handoff. Frontmatter alone would therefore classify none of
-    them "handoff" today, defeating the whole point. This fallback closes that
-    gap using the SAME scope as the existing consumer-side workaround
-    (``shared/scripts/research_precheck.py``'s ``_is_handoff_mirror``, added
-    2026-09-03): parent directory literal "context", and a basename that is
-    one of the known mirror names or contains "handoff" -- never the whole
-    vault or the whole ``context/`` tree, so an unrelated same-named file
-    elsewhere in the corpus stays "note".
+    Fallback: some session-bookkeeping mirrors carry no such frontmatter at
+    all, or frontmatter with no ``type``/``tags`` field naming them a
+    handoff, so frontmatter alone cannot classify them "handoff". This
+    fallback closes that gap from the FILENAME instead: a file directly
+    under ``handoff_mirror_dir`` (matched case-insensitively) whose basename
+    is either one of ``handoff_mirror_basenames`` exactly, or matches the
+    anchored ``_HANDOFF_LEADING_RE``/``_HANDOFF_TRAILING_RE`` "handoff"
+    TOKEN patterns (see their definitions for the exact shape), classifies
+    "handoff". Deliberately a bounded TOKEN match, never a bare substring
+    check, so a title that merely contains the word
+    ("handoff-skill-redesign-spec.md") stays "note" while a real
+    dated/versioned mirror name ("handoff-alphahive-world-v5.md") still
+    matches. Scoped to exactly ``handoff_mirror_dir`` -- never the whole
+    corpus -- so an unrelated same-named file elsewhere stays "note".
+
+    ``handoff_mirror_dir``/``handoff_mirror_basenames`` default to
+    ``DEFAULT_HANDOFF_MIRROR_DIR``/``DEFAULT_HANDOFF_MIRROR_BASENAMES`` so
+    existing behavior is unchanged; a caller can override either via
+    :func:`ingest`'s matching parameters (and the CLI's
+    ``--handoff-mirror-dir``/``--handoff-mirror-basename`` flags) instead of
+    editing this module.
     """
     fm = _parse_frontmatter(text)
     fm_type = str(fm.get("type", "") or "").strip().lower()
@@ -205,8 +274,10 @@ def _doc_class(rel: str, text: str) -> str:
 
     path = PurePosixPath(rel)
     basename = path.name.lower()
-    if path.parent.name == "context" and (
-        basename in _HANDOFF_MIRROR_BASENAMES or "handoff" in basename
+    if path.parent.name.lower() == handoff_mirror_dir.lower() and (
+        basename in handoff_mirror_basenames
+        or _HANDOFF_LEADING_RE.match(basename)
+        or _HANDOFF_TRAILING_RE.search(basename)
     ):
         return "handoff"
 
@@ -244,6 +315,8 @@ def ingest(
     incremental: bool = True,
     store_dir: Path | str | None = None,
     dedupe_snapshots: bool = True,
+    handoff_mirror_dir: str = DEFAULT_HANDOFF_MIRROR_DIR,
+    handoff_mirror_basenames: frozenset[str] | set[str] = DEFAULT_HANDOFF_MIRROR_BASENAMES,
 ) -> IngestReport:
     """Ingest all corpus files into *store*, skipping excluded prefix subtrees.
 
@@ -262,9 +335,17 @@ def ingest(
             snapshot series that are byte-identical to the previous snapshot's.
             The first occurrence is always kept and stays attributable to its own
             date; see :mod:`rag_mcp.snapshots`.
+        handoff_mirror_dir: parent directory name (not a path) eligible for the
+            ``_doc_class`` filename fallback. Defaults to
+            :data:`DEFAULT_HANDOFF_MIRROR_DIR` (``"context"``) -- a different
+            corpus can override this instead of editing the module.
+        handoff_mirror_basenames: basenames (matched case-insensitively) the
+            ``_doc_class`` filename fallback treats as handoff mirrors.
+            Defaults to :data:`DEFAULT_HANDOFF_MIRROR_BASENAMES`.
     """
     root = Path(root)
     report = IngestReport()
+    handoff_mirror_basenames = frozenset(b.lower() for b in handoff_mirror_basenames)
 
     if store_dir is None:
         store_dir = store.path
@@ -320,18 +401,25 @@ def ingest(
         kept_idx = plan.kept.get(rel)  # None => not a snapshot-series file
         hash_same = bool(use_manifest and previous.unchanged(rel, digest))
         prev_ids = previous.stored_ids(rel)
+        # True when this file's STORED chunks predate the current metadata
+        # rules (e.g. a pre-doc_class-feature manifest, or a future schema
+        # bump) -- see CURRENT_METADATA_VERSION. Forces a metadata-only
+        # refresh below instead of the plain unchanged-skip.
+        meta_stale = use_manifest and previous.meta_version(rel) < CURRENT_METADATA_VERSION
 
-        # Fast path: an ordinary file whose content is unchanged AND whose stored
-        # id set is the full one. The `kept` check matters when snapshot dedupe
-        # gets turned off: those files' suppressed chunks must come BACK, and the
-        # content hash alone would happily skip them forever.
+        # Fast path: an ordinary file whose content is unchanged, whose stored
+        # id set is the full one, AND whose stored metadata is current. The
+        # `kept` check matters when snapshot dedupe gets turned off: those
+        # files' suppressed chunks must come BACK, and the content hash alone
+        # would happily skip them forever.
         if (
             hash_same
             and kept_idx is None
             and prev_ids == {f"{rel}::{i}" for i in range(previous.chunk_count(rel))}
+            and not meta_stale
         ):
             report.files_unchanged += 1
-            current.record(rel, digest, previous.chunk_count(rel))
+            current.record(rel, digest, previous.chunk_count(rel), meta_version=CURRENT_METADATA_VERSION)
             continue
 
         chunks = snapshot_chunks.get(rel)
@@ -347,7 +435,12 @@ def ingest(
         span_h = plan.span_signature(rel)
         # Classified once per file (not per chunk) so every chunk of a doc
         # carries the identical doc_class.
-        doc_class = _doc_class(rel, text)
+        doc_class = _doc_class(
+            rel,
+            text,
+            handoff_mirror_dir=handoff_mirror_dir,
+            handoff_mirror_basenames=handoff_mirror_basenames,
+        )
 
         # An unchanged file only needs the chunks that are MISSING from the store
         # (normally none). Re-embedding the rest to record a metadata change
@@ -381,9 +474,12 @@ def ingest(
             store.delete(ids=stale)
             report.chunks_deleted += len(stale)
 
-        # A survivor's repeat span grows on days its own file does not change,
-        # so refresh metadata (never embeddings) exactly when that span moved.
-        if kept_idx is not None and span_h != previous.span_hash(rel):
+        # Refresh metadata (never embeddings) for chunks that are already
+        # stored and were NOT just (re)written above, in two cases: a
+        # survivor's repeat span grew on a day its own file did not change,
+        # or this file's stored metadata predates the current schema
+        # (meta_stale -- see CURRENT_METADATA_VERSION).
+        if meta_stale or (kept_idx is not None and span_h != previous.span_hash(rel)):
             added_ids = {f"{rel}::{c.chunk_index}" for c in to_add}
             for c in selected:
                 cid = f"{rel}::{c.chunk_index}"
@@ -398,6 +494,7 @@ def ingest(
             len(chunks),
             kept=[c.chunk_index for c in selected],
             span_hash=span_h,
+            meta_version=CURRENT_METADATA_VERSION,
         )
 
     if refresh_ids:

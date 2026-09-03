@@ -6,7 +6,7 @@
 
 name: rag-mcp
 description: >
-  Retrieval over a local knowledge corpus via embeddings. search_knowledge(query, k)
+  Retrieval over a local knowledge corpus via embeddings. search_knowledge(query, k, doc_class)
   returns the most relevant passages plus citations (source file + heading + chunk index)
   so answers are traceable. Auth-scoped to the configured corpus root and fail-soft (a
   down/empty store returns a structured error, never crashes the agent). Use to look
@@ -32,6 +32,14 @@ tools:
         type: number
         required: false
         description: "Max passages to return, 1-20 (default 5)."
+      - name: doc_class
+        type: string
+        required: false
+        description: >
+          Optional metadata filter: restrict results to chunks with this exact doc_class
+          (e.g. "note" to exclude session/agent handoff bookkeeping mirrors). One of
+          "note" or "handoff", case-sensitive; a value outside that set returns an
+          invalid_doc_class error rather than an empty result. Omit for no filter.
 
 env_required:
   - RAG_MCP_CORPUS_ROOT

@@ -3,14 +3,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
+import yaml
 from mcp import types
 
 from rag_mcp import server as srv
 from rag_mcp.ingest import ingest
 from rag_mcp.search import search_knowledge
 from rag_mcp.store import HashEmbedder, VectorStore
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_MCP_YAML_PATH = _REPO_ROOT / "mcp.yaml"
 
 
 def _call(name: str, arguments: dict | None = None):
@@ -127,3 +132,26 @@ def test_call_tool_doc_class_parity_with_direct_search_knowledge(mixed_wired):
     out = _call("search_knowledge", {"query": "loyal dog barks", "k": 5, "doc_class": "note"})
     via_tool = json.loads(out.content[0].text)
     assert via_tool == direct
+
+
+# ---------------------------------------------------------------------------
+# mcp.yaml / server.py tool-schema parity (RM-fixafter-ragmcp slice 8) --
+# mcp.yaml's `tools[].args` is a second, hand-maintained description of the
+# same tool schema server.py's `_TOOL.input_schema` defines. Nothing kept
+# them in sync (mcp.yaml had no `doc_class` arg at all until this slice) --
+# this test FIRES the next time either drifts from the other.
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_yaml_tool_args_match_server_schema_properties():
+    raw = yaml.safe_load(_MCP_YAML_PATH.read_text(encoding="utf-8"))
+    tool_entry = next(t for t in raw["tools"] if t["name"] == "search_knowledge")
+    yaml_arg_names = {arg["name"] for arg in tool_entry["args"]}
+
+    schema_props = set(srv._TOOL.input_schema["properties"])
+
+    assert yaml_arg_names == schema_props, (
+        f"mcp.yaml args {sorted(yaml_arg_names)} != server.py tool schema "
+        f"properties {sorted(schema_props)} -- keep both in sync by hand "
+        "whenever either changes."
+    )
