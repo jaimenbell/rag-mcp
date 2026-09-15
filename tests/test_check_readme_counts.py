@@ -85,9 +85,21 @@ class TestGateExitCodes:
 
 
 class TestParsing:
-    def test_summary_with_skips_still_parses_passed(self, tmp_path):
+    def test_summary_with_skips_parses_and_totals_against_the_claim(self, tmp_path):
+        # The claim is a TOTAL-collected count (passed + skipped), not a bare
+        # passed count -- see check_readme_counts.py's module docstring. A
+        # README claiming 53 against a live "53 passed, 2 skipped" is now a
+        # genuine drift (55 collected, not 53): the gate must not silently
+        # swallow 2 extra skipped tests just because it can parse the field.
         result = run_gate(tmp_path, README_MATCH, "53 passed, 2 skipped in 4.10s\n")
-        assert result.returncode == 0
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "DRIFT" in result.stdout
+
+        # Same live output, claim adjusted to match the true total (55) --
+        # this is the case that must pass.
+        readme_55 = README_MATCH.replace("53 passed", "55 passed")
+        result = run_gate(tmp_path, readme_55, "53 passed, 2 skipped in 4.10s\n")
+        assert result.returncode == 0, result.stdout + result.stderr
 
     def test_failed_run_summary_is_drift_not_match(self, tmp_path):
         # "1 failed, 52 passed" must compare 52 (not 53) against the claim.
@@ -173,3 +185,79 @@ python -m pytest        # 115 passed
         module = _load_gate_module()
         text = "we passed the review in 2.00s, then 40 failed in 9.9s\n"
         assert self._parse(module, text) is None
+
+
+class TestPlatformConditionalSkip:
+    """The README claim is authored from a full (Windows) local run where the
+    WINDOWS_ONLY guard in test_reindex_handle_release.py actually executes and
+    passes. On Linux CI that same test is skipped (os.name != "nt"), so the
+    live 'passed' count is permanently one less than the README's claim even
+    though nothing has drifted -- the claim represents total collected tests,
+    not a platform-specific pass count. See tests/test_check_readme_counts.py
+    root-cause note in check_readme_counts.py's module docstring.
+
+    FIRES / STAYS-SILENT / FIRES-on-red positive controls for the fix:
+    """
+
+    README_246 = """\
+# rag-mcp
+
+## Tests
+```bash
+python -m pytest        # 246 passed
+```
+"""
+
+    def test_silent_when_skip_accounts_for_the_gap(self, tmp_path):
+        # STAYS-SILENT: claim=246, live=245 passed + 1 skipped (the Linux CI
+        # shape for this exact repo state) -- total collected still matches.
+        result = run_gate(
+            tmp_path, self.README_246, "245 passed, 1 skipped in 29.75s\n"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "DRIFT" not in result.stdout
+
+    def test_fires_when_gap_is_not_fully_explained_by_skips(self, tmp_path):
+        # FIRES: claim=246, live=245 passed + 0 skipped -- a real missing
+        # test, not a platform guard. Must still drift.
+        result = run_gate(tmp_path, self.README_246, "245 passed in 16.0s\n")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "DRIFT" in result.stdout
+
+    def test_fires_on_failure_even_when_total_matches_claim(self, tmp_path):
+        # FIRES: never silent on red. passed(52) + skipped(1) == claim(53),
+        # but a failure is present -- the gate must not wave this through.
+        readme = """\
+# rag-mcp
+
+## Tests
+```bash
+python -m pytest        # 53 passed
+```
+"""
+        result = run_gate(
+            tmp_path, readme, "52 passed, 1 skipped, 1 failed in 4.0s\n"
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "DRIFT" in result.stdout or "FAIL" in result.stdout
+
+    def test_fires_on_error_even_when_total_matches_claim(self, tmp_path):
+        # Same as above but for collection/setup errors instead of failures.
+        readme = """\
+# rag-mcp
+
+## Tests
+```bash
+python -m pytest        # 53 passed
+```
+"""
+        result = run_gate(
+            tmp_path, readme, "52 passed, 1 skipped, 1 error in 4.0s\n"
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_still_silent_with_zero_skips_and_exact_match(self, tmp_path):
+        # Negative control: the old exact-match behavior (0 skips) still
+        # passes cleanly -- this fix must not loosen the no-skip case.
+        result = run_gate(tmp_path, self.README_246, "246 passed in 16.86s\n")
+        assert result.returncode == 0, result.stdout + result.stderr

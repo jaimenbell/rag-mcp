@@ -160,8 +160,15 @@ rebuild.
 
 ## Tests
 ```bash
-python -m pytest        # 246 passed
+python -m pytest        # 251 passed
 ```
+This count is the total collected, CI-enforced against the live pytest summary
+(`scripts/check_readme_counts.py`, wired into `.github/workflows/ci.yml`). One
+test is platform-conditional -- `WINDOWS_ONLY` in
+`tests/test_reindex_handle_release.py` only runs on Windows -- so Linux CI
+reports 250 passed, 1 skipped for the same 251-test suite; the gate compares
+passed-plus-skipped against this claim, not passed alone, so that expected
+skip does not read as drift.
 
 ## Layout
 ```

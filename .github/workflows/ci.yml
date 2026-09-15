@@ -32,9 +32,12 @@ jobs:
 
       # NOTE: no -q flag here -- pyproject.toml's addopts already applies -q,
       # and a second -q suppresses the final summary line the count gate parses.
+      # -rs prints a short summary of each skipped test's reason, so a
+      # platform-conditional skip (e.g. WINDOWS_ONLY) is attributable in the
+      # captured log rather than just a bare count.
       - name: Run test suite
         shell: bash
-        run: python -m pytest 2>&1 | tee pytest-output.txt
+        run: python -m pytest -rs 2>&1 | tee pytest-output.txt
 
       - name: Verify README test counts
         run: python scripts/check_readme_counts.py pytest-output.txt
